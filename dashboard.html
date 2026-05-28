@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Manual Definitivo — Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080b14;--card:#10152a;--border:#1c2240;--bh:#2a3060;
+  --text:#cdd5f0;--muted:#4a5480;--hint:#222a50;
+  --blue:#3d7fff;--teal:#00c9a0;--green:#1fbe5a;
+  --amber:#f0a030;--red:#ef4444;--purple:#9d78ff;--orange:#ff6b35;
+}
+html,body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh}
+#app{padding:24px 28px;max-width:1200px;margin:0 auto}
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px}
+.hdr h1{font-family:'Syne',sans-serif;font-size:18px;font-weight:800;letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+.badge{font-size:10px;font-weight:700;background:rgba(31,190,90,.1);border:1px solid var(--green);color:var(--green);padding:2px 8px;border-radius:5px;letter-spacing:.08em}
+.hdr-sub{margin-top:5px;font-size:11px;color:var(--muted);font-family:'DM Mono',monospace}
+.btn-refresh{background:transparent;border:1px solid var(--border);color:var(--muted);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:12px;font-family:'DM Sans',sans-serif;font-weight:500;transition:all .15s}
+.btn-refresh:hover:not(:disabled){border-color:var(--teal);color:var(--teal)}
+.btn-refresh:disabled{opacity:.4;cursor:not-allowed}
+.err{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:13px;color:#f87171;line-height:1.6}
+
+/* ── Tela de aviso file:// ── */
+.file-warn{background:var(--card);border:1px solid var(--amber);border-radius:14px;padding:32px 36px;max-width:560px;margin:60px auto}
+.file-warn h2{font-family:'Syne',sans-serif;font-size:16px;font-weight:800;color:var(--amber);margin-bottom:10px}
+.file-warn p{font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:18px}
+.file-warn code{background:#0d1120;border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-family:'DM Mono',monospace;font-size:12px;color:var(--teal);display:block;margin:8px 0 14px;letter-spacing:.02em}
+.file-warn .step{display:flex;gap:12px;margin-bottom:10px;align-items:flex-start;font-size:13px;color:var(--text)}
+.file-warn .sn{width:22px;height:22px;border-radius:50%;background:rgba(61,127,255,.15);border:1px solid var(--blue);color:var(--blue);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+
+/* Period */
+.period-wrap{margin-bottom:22px}
+.period-top{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.period-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-weight:600}
+.drbox{display:flex;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:9px;overflow:hidden;transition:border-color .15s}
+.drbox:focus-within{border-color:var(--blue)}
+.drbox-icon{padding:7px 6px 7px 11px;color:var(--muted);font-size:13px;user-select:none}
+.drbox input[type=date]{background:transparent;border:none;outline:none;color:var(--text);font-size:13px;font-family:'DM Mono',monospace;padding:7px 10px 7px 4px;cursor:pointer;color-scheme:dark;width:120px}
+.drbox-sep{color:var(--muted);font-size:13px;padding:0 4px;user-select:none}
+.period-quick{display:flex;gap:5px;flex-wrap:wrap}
+.btn-q{background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-family:'DM Sans',sans-serif;font-weight:500;transition:all .12s;white-space:nowrap}
+.btn-q:hover{border-color:var(--bh);color:var(--text)}
+.btn-q.on{background:rgba(61,127,255,.12);border-color:var(--blue);color:var(--blue);font-weight:600}
+
+/* KPIs */
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.kc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;position:relative;overflow:hidden;transition:border-color .2s}
+.kc:hover{border-color:var(--bh)}
+.kc-bar{position:absolute;top:0;left:0;right:0;height:2px;border-radius:12px 12px 0 0}
+.kc-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;font-weight:600}
+.kc-val{font-family:'Syne',sans-serif;font-weight:700;letter-spacing:-.02em}
+.kc-sub{font-size:11px;color:var(--hint);margin-top:5px;font-family:'DM Mono',monospace}
+
+/* Charts */
+.cc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 18px 12px}
+.ch{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.ct{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+.lg{display:flex;gap:12px}
+.li{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
+.ll{width:14px;height:2px;border-radius:2px}
+.ld{width:7px;height:7px;border-radius:50%}
+.charts-2x2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:20px}
+.tip{background:#0d1120;border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:none;position:absolute;pointer-events:none;z-index:20;min-width:150px}
+.tl{color:var(--muted);margin-bottom:5px;font-weight:500;font-size:11px;font-family:'DM Mono',monospace}
+.tr{display:flex;justify-content:space-between;gap:14px;margin-bottom:2px}
+.tv{color:var(--text);font-weight:600}
+.sw{display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px}
+.sp{width:34px;height:34px;border:3px solid var(--border);border-top:3px solid var(--teal);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.st{color:var(--muted);font-size:13px}
+.foot{margin-top:18px;font-size:11px;color:var(--hint);text-align:center;font-family:'DM Mono',monospace}
+canvas{display:block}
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.4);cursor:pointer;opacity:.6}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="sw" id="loading"><div class="sp"></div><p class="st">Carregando dados...</p></div>
+  <div id="main" style="display:none"></div>
+</div>
+<script>
+const IS_FILE = location.protocol === "file:";
+
+const SHEET_ID = "1WnzVmGkeT-s9RW3Kop1MdY8NmkNoGNk7CDDa9YvYw90";
+const API_KEY  = "AIzaSyDxMp-u0RUfy-Xv0jICULZbJGpuAUxqQPI";
+const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("Ⓜ️ Base Meta")}?key=${API_KEY}`;
+const URL_VENDAS = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("📥 Base Vendas")}?key=${API_KEY}`;
+
+const META_CPV = 10, META_ROAS = 1.80;
+
+const S = {
+  meta:{}, vendas:{},
+  loading:false, error:null, updated:null, firstLoad:true,
+  startDate: nDaysAgoISO(29), endDate: todayISO(), activeQuick:"30d",
+};
+
+function todayISO(){ return new Date().toISOString().split("T")[0] }
+function yesterdayISO(){ const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().split("T")[0] }
+function nDaysAgoISO(n){ const d=new Date();d.setDate(d.getDate()-n);return d.toISOString().split("T")[0] }
+function firstOfMonthISO(){ const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01` }
+function parseBRL(s){ if(!s||s==="-"||s==="0")return 0; return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",",".").trim())||0 }
+function toISO(s){ if(!s||s==="Date"||s==="")return null; s=String(s).trim(); if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s; const p=s.split("/"); if(p.length===3){const y=p[2].length===4?p[2]:"20"+p[2];return `${y}-${p[1].padStart(2,"0")}-${p[0].padStart(2,"0")}`} return null }
+function fBRL(n){ return "R$ "+(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}) }
+function fBRLShort(n){ const a=Math.abs(n||0),sg=n<0?"-":""; if(a>=1000)return sg+"R$"+(a/1000).toFixed(1)+"k"; return sg+"R$"+Math.round(a) }
+function fDate(iso){ if(!iso)return"";const[,m,d]=iso.split("-");return `${d}/${m}` }
+
+function parseSheet(json){ const rows=json.values||[]; if(rows.length<2)return[]; const h=rows[0]; return rows.slice(1).map(r=>Object.fromEntries(h.map((k,i)=>[k,(r[i]||"").trim()]))) }
+
+async function loadData(){
+  if(IS_FILE){ S.firstLoad=false; render(); return; }
+  S.loading=true; S.error=null;
+  if(!S.firstLoad) render();
+  try {
+    const [mr,vr]=await Promise.all([fetch(URL_META),fetch(URL_VENDAS)]);
+    if(!mr.ok)throw new Error(`HTTP ${mr.status} ao carregar Meta`);
+    if(!vr.ok)throw new Error(`HTTP ${vr.status} ao carregar Vendas`);
+    const [mj,vj]=await Promise.all([mr.json(),vr.json()]);
+    const mD={};
+    for(const r of parseSheet(mj)){ const d=toISO(r["Date"]);if(!d)continue; if(!mD[d])mD[d]={spend:0,clicks:0,impressions:0}; mD[d].spend+=parseBRL(r["Spend (Cost, Amount Spent)"]); mD[d].clicks+=parseInt(r["Action Link Clicks"]||0)||0; mD[d].impressions+=parseInt(r["Impressions"]||0)||0 }
+    S.meta=mD;
+    const vD={};
+    for(const r of parseSheet(vj)){ const d=toISO(r["Data correta"]);if(!d)continue; if(!vD[d])vD[d]={qtd:0,valor:0}; vD[d].qtd+=1; vD[d].valor+=parseBRL(r["Valor do produto"]) }
+    S.vendas=vD;
+    S.updated=new Date().toLocaleTimeString("pt-BR"); S.firstLoad=false;
+  } catch(e){ S.error=e.message; S.firstLoad=false; }
+  S.loading=false; render();
+}
+
+function getDaily(){ const all=new Set([...Object.keys(S.meta),...Object.keys(S.vendas)]); return Array.from(all).sort().filter(d=>d>=S.startDate&&d<=S.endDate).map(date=>{ const m=S.meta[date]||{spend:0,clicks:0,impressions:0}; const v=S.vendas[date]||{qtd:0,valor:0}; return{date,label:fDate(date),spend:m.spend,faturamento:v.valor,vendas:v.qtd, roas:m.spend>0?v.valor/m.spend:0,cpv:v.qtd>0?m.spend/v.qtd:0,ticket:v.qtd>0?v.valor/v.qtd:0,lucro:v.valor-m.spend} }) }
+function getTotals(d){ const t=d.reduce((a,r)=>({spend:a.spend+r.spend,fat:a.fat+r.faturamento,vendas:a.vendas+r.vendas}),{spend:0,fat:0,vendas:0}); return{...t,faturamento:t.fat,roas:t.spend>0?t.fat/t.spend:0,cpv:t.vendas>0?t.spend/t.vendas:0,ticket:t.vendas>0?t.fat/t.vendas:0,lucro:t.fat-t.spend} }
+
+function applyQuick(k){ S.activeQuick=k;const t=todayISO();({hoje:()=>{S.startDate=t;S.endDate=t},ontem:()=>{const y=yesterdayISO();S.startDate=y;S.endDate=y},"7d":()=>{S.startDate=nDaysAgoISO(6);S.endDate=t},"30d":()=>{S.startDate=nDaysAgoISO(29);S.endDate=t},mes:()=>{S.startDate=firstOfMonthISO();S.endDate=t}})[k]?.();render() }
+function onDC(w,v){ if(w==="s")S.startDate=v;else S.endDate=v;S.activeQuick="";render() }
+
+const DPR=window.devicePixelRatio||1;
+function drawChart(id,data,lines,refs,cssW,cssH){ const c=document.getElementById(id);if(!c)return;c.width=Math.round(cssW*DPR);c.height=Math.round(cssH*DPR);c.style.width=cssW+"px";c.style.height=cssH+"px";const ctx=c.getContext("2d");ctx.scale(DPR,DPR);const P={t:12,r:14,b:28,l:60};const cW=cssW-P.l-P.r,cH=cssH-P.t-P.b;let av=[];lines.forEach(l=>av.push(...data.map(d=>+(d[l.key])||0)));if(refs)refs.forEach(r=>av.push(r.value));const rMx=Math.max(...av,0.01),rMn=Math.min(...av,0);const rng=rMx-rMn||1;const mn=rMn<0?rMn-rng*.08:0,mx=rMx+rng*.12;const xP=i=>P.l+(data.length>1?i/(data.length-1):0.5)*cW;const yP=v=>P.t+cH-((v-mn)/(mx-mn))*cH;for(let i=0;i<=4;i++){const y=P.t+(i/4)*cH;ctx.strokeStyle="#1c2240";ctx.lineWidth=1;ctx.setLineDash([]);ctx.beginPath();ctx.moveTo(P.l,y);ctx.lineTo(P.l+cW,y);ctx.stroke();ctx.fillStyle="#4a5480";ctx.font="10px 'DM Mono',monospace";ctx.textAlign="right";ctx.fillText((lines[0].fmt||fBRLShort)(mx-(i/4)*(mx-mn)),P.l-5,y+3.5)}if(mn<0){ctx.strokeStyle="#2a3060";ctx.lineWidth=1;ctx.setLineDash([2,3]);ctx.beginPath();ctx.moveTo(P.l,yP(0));ctx.lineTo(P.l+cW,yP(0));ctx.stroke();ctx.setLineDash([])}if(refs)refs.forEach(r=>{const ry=yP(r.value);ctx.strokeStyle=r.color+"99";ctx.lineWidth=1.2;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(P.l,ry);ctx.lineTo(P.l+cW,ry);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=r.color;ctx.font="9px 'DM Sans',sans-serif";ctx.textAlign="right";ctx.fillText(r.label,P.l+cW,ry-3)});lines.forEach(l=>{if(data.length<2)return;const vals=data.map(d=>+(d[l.key])||0);const z0=yP(Math.max(0,mn));ctx.beginPath();ctx.moveTo(xP(0),yP(vals[0]));for(let i=1;i<data.length;i++)ctx.lineTo(xP(i),yP(vals[i]));ctx.lineTo(xP(data.length-1),z0);ctx.lineTo(xP(0),z0);ctx.closePath();const g=ctx.createLinearGradient(0,P.t,0,P.t+cH);g.addColorStop(0,l.color+"35");g.addColorStop(1,l.color+"00");ctx.fillStyle=g;ctx.fill();ctx.beginPath();ctx.strokeStyle=l.color;ctx.lineWidth=2;ctx.setLineDash([]);ctx.moveTo(xP(0),yP(vals[0]));for(let i=1;i<data.length;i++)ctx.lineTo(xP(i),yP(vals[i]));ctx.stroke()});const step=data.length>60?7:data.length>30?3:data.length>14?2:1;ctx.fillStyle="#4a5480";ctx.font="10px 'DM Mono',monospace";ctx.textAlign="center";ctx.setLineDash([]);data.forEach((d,i)=>{if(i%step===0)ctx.fillText(d.label,xP(i),P.t+cH+18)}) }
+function tip(ci,ti,data,lines){ const c=document.getElementById(ci),t=document.getElementById(ti);if(!c||!t)return;c.addEventListener("mousemove",e=>{const rect=c.getBoundingClientRect();const rx=(e.clientX-rect.left)-60,cW=rect.width-74;if(rx<0||rx>cW||!data.length){t.style.display="none";return}const d=data[Math.max(0,Math.min(Math.round((rx/cW)*(data.length-1)),data.length-1))];let h=`<div class="tl">${d.label||d.date}</div>`;lines.forEach(l=>{h+=`<div class="tr"><span style="color:${l.color}">${l.name}</span><span class="tv">${(l.fmt||fBRL)(+(d[l.key])||0)}</span></div>`});t.innerHTML=h;t.style.display="block";const tw=t.offsetWidth,x=e.clientX-rect.left;t.style.left=(x+12+tw>rect.width-8?x-tw-12:x+12)+"px";t.style.top=(e.clientY-rect.top-20)+"px"});c.addEventListener("mouseleave",()=>t.style.display="none") }
+
+function render(){
+  const ld=document.getElementById("loading"),mn=document.getElementById("main");
+  if(S.firstLoad&&S.loading){ld.style.display="flex";mn.style.display="none";return}
+  ld.style.display="none"; mn.style.display="block";
+
+  // ── Tela file:// ──
+  if(IS_FILE){
+    mn.innerHTML=`
+    <div class="hdr"><div><h1>Manual Definitivo</h1></div></div>
+    <div class="file-warn">
+      <h2>⚠️ Abra via servidor local</h2>
+      <p>O browser bloqueia conexões externas quando o arquivo é aberto direto pelo Explorer (<code>file://</code>). É necessário servir via HTTP local — leva 10 segundos.</p>
+      <div class="step"><div class="sn">1</div><div>Abra o <strong>Prompt de Comando</strong> (Windows) ou <strong>Terminal</strong> (Mac/Linux) na pasta do arquivo</div></div>
+      <div class="step"><div class="sn">2</div><div>Cole e execute:<code>python -m http.server 8080</code></div></div>
+      <div class="step"><div class="sn">3</div><div>Abra no browser:<code>http://localhost:8080/dashboard.html</code></div></div>
+      <p style="margin-top:16px;font-size:12px;color:var(--hint)">Ou dê duplo clique no arquivo <strong>INICIAR.bat</strong> (Windows) / <strong>INICIAR.sh</strong> (Mac/Linux) que está na mesma pasta.</p>
+    </div>`;
+    return;
+  }
+
+  const daily=getDaily(),tot=getTotals(daily);
+  const rc=tot.roas>=META_ROAS?"#1fbe5a":tot.roas>=META_ROAS*.8?"#f0a030":"#ef4444";
+  const cc=tot.cpv>0&&tot.cpv<=META_CPV?"#1fbe5a":tot.cpv<=META_CPV*1.3?"#f0a030":"#ef4444";
+  const lc=tot.lucro>=0?"#1fbe5a":"#ef4444";
+  const QS=[{k:"hoje",l:"Hoje"},{k:"ontem",l:"Ontem"},{k:"7d",l:"7 dias"},{k:"30d",l:"30 dias"},{k:"mes",l:"Este mês"}];
+  const kpi=(lb,vl,sb,co,sm=false)=>`<div class="kc"><div class="kc-bar" style="background:${co}"></div><div class="kc-lbl">${lb}</div><div class="kc-val" style="color:${co};font-size:${sm?"17px":"21px"}">${vl}</div>${sb?`<div class="kc-sub">${sb}</div>`:""}</div>`;
+
+  mn.innerHTML=`
+    <div class="hdr">
+      <div><h1>Manual Definitivo <span class="badge">LIVE</span></h1>
+      <p class="hdr-sub">${S.updated?`↻ ${S.updated}`:"Aguardando..."}${daily.length>0?` · ${daily.length} dias`:""}</p></div>
+      <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"⏳ Carregando...":"↻ Atualizar"}</button>
+    </div>
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+    <div class="period-wrap">
+      <div class="period-top">
+        <span class="period-lbl">Período</span>
+        <div class="drbox">
+          <span class="drbox-icon">📅</span>
+          <input type="date" value="${S.startDate}" onchange="onDC('s',this.value)"/>
+          <span class="drbox-sep">—</span>
+          <input type="date" value="${S.endDate}" onchange="onDC('e',this.value)"/>
+        </div>
+      </div>
+      <div class="period-quick">${QS.map(q=>`<button class="btn-q${S.activeQuick===q.k?" on":""}" onclick="applyQuick('${q.k}')">${q.l}</button>`).join("")}</div>
+    </div>
+    <div class="g3" style="margin-bottom:12px">
+      ${kpi("Investimento",fBRL(tot.spend),`${tot.vendas} vendas · ${daily.length} dias`,"#3d7fff")}
+      ${kpi("Faturamento",fBRL(tot.faturamento),`Ticket médio ${fBRL(tot.ticket)}`,"#00c9a0")}
+      ${kpi("Lucro Bruto",fBRL(tot.lucro),"Faturamento − Investimento",lc)}
+    </div>
+    <div class="g3" style="margin-bottom:22px">
+      ${kpi("ROAS",tot.roas.toFixed(2)+"x",`Meta: ${META_ROAS.toFixed(2)}x`,rc)}
+      ${kpi("Custo por Venda",fBRL(tot.cpv),`Meta: ${fBRL(META_CPV)}`,cc)}
+      ${kpi("Ticket Médio",fBRL(tot.ticket),`${tot.vendas} vendas no período`,"#9d78ff",true)}
+    </div>
+    <div class="cc" style="margin-bottom:16px;position:relative">
+      <div class="ch"><span class="ct">Investimento × Custo por Venda</span><div class="lg"><span class="li"><span class="ll" style="background:#3d7fff"></span>Investimento</span><span class="li"><span class="ll" style="background:#f0a030"></span>CPV</span></div></div>
+      <div style="position:relative"><canvas id="c-inv"></canvas><canvas id="c-cpv" style="position:absolute;top:0;left:0;pointer-events:none"></canvas><div class="tip" id="t-main"></div></div>
+    </div>
+    <div class="charts-2x2">
+      <div class="cc" style="position:relative"><div class="ch"><span class="ct">Faturamento</span><span class="li"><span class="ld" style="background:#00c9a0"></span>diário</span></div><div style="position:relative"><canvas id="c-fat"></canvas><div class="tip" id="t-fat"></div></div></div>
+      <div class="cc" style="position:relative"><div class="ch"><span class="ct">ROAS diário</span><span class="li"><span class="ld" style="background:#1fbe5a"></span>ROAS</span></div><div style="position:relative"><canvas id="c-roas"></canvas><div class="tip" id="t-roas"></div></div></div>
+      <div class="cc" style="position:relative"><div class="ch"><span class="ct">Ticket Médio</span><span class="li"><span class="ld" style="background:#9d78ff"></span>R$/venda</span></div><div style="position:relative"><canvas id="c-tick"></canvas><div class="tip" id="t-tick"></div></div></div>
+      <div class="cc" style="position:relative"><div class="ch"><span class="ct">Lucro Bruto</span><span class="li"><span class="ld" style="background:#ff6b35"></span>diário</span></div><div style="position:relative"><canvas id="c-lucro"></canvas><div class="tip" id="t-lucro"></div></div></div>
+    </div>
+    <p class="foot">Base Meta (Stract) + Base Vendas (Eduzz) · Google Sheets API v4</p>`;
+
+  requestAnimationFrame(()=>{
+    const mW=document.getElementById("c-inv")?.parentElement?.offsetWidth||760;
+    const sW=document.getElementById("c-fat")?.parentElement?.offsetWidth||360;
+    drawChart("c-inv",daily,[{key:"spend",color:"#3d7fff",fmt:fBRLShort}],null,mW,220);
+    const ci=document.getElementById("c-inv"),cc2=document.getElementById("c-cpv");
+    if(ci&&cc2){cc2.style.width=ci.style.width;cc2.style.height=ci.style.height;cc2.width=ci.width;cc2.height=ci.height}
+    drawChart("c-cpv",daily,[{key:"cpv",color:"#f0a030",fmt:v=>"R$"+v.toFixed(2)}],[{value:META_CPV,color:"#f0a030",label:"Meta R$10"}],mW,220);
+    drawChart("c-fat",daily,[{key:"faturamento",color:"#00c9a0",fmt:fBRLShort}],null,sW,165);
+    drawChart("c-roas",daily,[{key:"roas",color:"#1fbe5a",fmt:v=>v.toFixed(2)+"x"}],[{value:META_ROAS,color:"#1fbe5a",label:"Meta 1.8x"}],sW,165);
+    drawChart("c-tick",daily,[{key:"ticket",color:"#9d78ff",fmt:fBRLShort}],null,sW,165);
+    drawChart("c-lucro",daily,[{key:"lucro",color:"#ff6b35",fmt:fBRLShort}],null,sW,165);
+    tip("c-inv","t-main",daily,[{key:"spend",color:"#3d7fff",name:"Investimento"},{key:"cpv",color:"#f0a030",name:"CPV"}]);
+    tip("c-fat","t-fat",daily,[{key:"faturamento",color:"#00c9a0",name:"Faturamento"}]);
+    tip("c-roas","t-roas",daily,[{key:"roas",color:"#1fbe5a",name:"ROAS",fmt:v=>v.toFixed(2)+"x"}]);
+    tip("c-tick","t-tick",daily,[{key:"ticket",color:"#9d78ff",name:"Ticket"}]);
+    tip("c-lucro","t-lucro",daily,[{key:"lucro",color:"#ff6b35",name:"Lucro"}]);
+  });
+}
+
+render();
+loadData();
+</script>
+</body>
+</html>
