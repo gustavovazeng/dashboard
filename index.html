@@ -274,6 +274,7 @@ async function loadData(){
     // Vendas — por dia (Principal/Tráfego) e por Ad ID (Anúncios)
     const vD={};
     const vByAd={};
+    const vByAdDate={};  // {adId: {date: {qtd,valor,taxa}}}
     for(const r of parseSheet(vj)){
       const d=toISO(r["Data correta"]);if(!d)continue;
       // Por dia
@@ -285,14 +286,22 @@ async function loadData(){
       const rawAdId=r["Ad Id"]||"";
       const adId=extractAdId(rawAdId);
       if(adId){
+        // Global (legado)
         if(!vByAd[adId])vByAd[adId]={qtd:0,valor:0,taxa:0};
         vByAd[adId].qtd   += 1;
         vByAd[adId].valor += parseBRL(r["Valor do produto"]);
         vByAd[adId].taxa  += parseBRL(r["Taxa da plataforma"]);
+        // Por data (para filtrar por período na aba Anúncios)
+        if(!vByAdDate[adId]) vByAdDate[adId]={};
+        if(!vByAdDate[adId][d]) vByAdDate[adId][d]={qtd:0,valor:0,taxa:0};
+        vByAdDate[adId][d].qtd   += 1;
+        vByAdDate[adId][d].valor += parseBRL(r["Valor do produto"]);
+        vByAdDate[adId][d].taxa  += parseBRL(r["Taxa da plataforma"]);
       }
     }
     S.vendas=vD;
     S.vendasByAd=vByAd;
+    S.vendasByAdDate=vByAdDate;
 
     S.updated=new Date(Date.now()-3*60*60*1000).toLocaleTimeString("pt-BR");
     S.firstLoad=false;
@@ -825,12 +834,16 @@ function renderAnuncios(){
         }
       }
       if(spend===0) continue;
-      // Vendas: soma dos ad IDs ativos no período
+      // Vendas: soma dos ad IDs ativos no período, filtradas pela data da venda
       let qtd=0,valor=0,taxa=0;
       const useIds=adIdsInPeriod.size>0?adIdsInPeriod:meta.adIds;
       for(const adId of useIds){
-        const v=S.vendasByAd[adId];
-        if(v){qtd+=v.qtd;valor+=v.valor;taxa+=v.taxa;}
+        const byDate=S.vendasByAdDate[adId]||{};
+        for(const [vd,vvals] of Object.entries(byDate)){
+          if(vd>=start && vd<=end){
+            qtd+=vvals.qtd; valor+=vvals.valor; taxa+=vvals.taxa;
+          }
+        }
       }
       if(!igUrl) igUrl=meta.igUrl;
       const cpc=clicks>0?spend/clicks:0;
@@ -876,8 +889,7 @@ function renderAnuncios(){
   function thSort(c,lbl){
     const active=col===c;
     const arrow=active?(dir==="asc"?" ↑":" ↓"):" ↕";
-    const style=active?"color:#1c1410;":"";
-    return `<th onclick="sortAnuncios('${c}')" style="cursor:pointer;user-select:none;${style}">${lbl}<span style="color:${active?"#e8621a":"#d8cfc3"};font-size:10px;margin-left:3px">${arrow}</span></th>`;
+    return `<th onclick="sortAnuncios('${c}')" style="padding:10px 14px;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${active?"#1c1410":"#7a6c5e"};cursor:pointer;user-select:none;border-bottom:1px solid var(--border);border-right:1px solid var(--border);white-space:nowrap">${lbl}<span style="color:${active?"#e8621a":"#d8cfc3"};font-size:10px;margin-left:3px">${arrow}</span></th>`;
   }
 
   function sc(v,meta,hi){return statusColor(v,meta,hi);}
@@ -911,7 +923,7 @@ function renderAnuncios(){
     <div style="background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:20px">
       <table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead>
-          <tr style="border-bottom:0.5px solid var(--border);background:var(--bg)">
+          <tr style="background:var(--bg)">
             ${thSort("advCode","Anúncio")}
             ${thSort("spend","Investimento")}
             ${thSort("qtd","Vendas")}
@@ -920,23 +932,23 @@ function renderAnuncios(){
             ${thSort("ctr","CTR")}
             ${thSort("cpm","CPM")}
             ${thSort("cpc","CPC")}
-            <th></th>
+            <th style="padding:10px 12px;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#7a6c5e;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"></th>
           </tr>
         </thead>
         <tbody>
-          ${sorted.map(r=>`
-          <tr style="border-bottom:0.5px solid var(--bg)">
-            <td style="padding:10px 12px">
+          ${sorted.map((r,i)=>`
+          <tr style="border-bottom:1px solid var(--border);background:${i%2===0?"var(--card)":"var(--bg)"}">
+            <td style="padding:10px 14px;text-align:center;border-right:1px solid var(--border)">
               <span style="background:#f3f1ed;border:0.5px solid var(--border-h);border-radius:5px;padding:2px 8px;font-size:10px;font-weight:600;color:#1c1410;font-family:'DM Mono',monospace">${r.advCode}</span>
             </td>
-            <td style="padding:10px 12px;color:#1c1410">${fBRL(r.spend)}</td>
-            <td style="padding:10px 12px;color:#1c1410">${r.qtd}</td>
-            <td style="padding:10px 12px;color:${sc(r.cpv,META_CPV,false)};font-weight:500">${r.qtd>0?fBRL(r.cpv):"—"}</td>
-            <td style="padding:10px 12px;color:${sc(r.ticket,META_TICKET,true)};font-weight:500">${r.qtd>0?fBRL(r.ticket):"—"}</td>
-            <td style="padding:10px 12px;color:${sc(r.ctr,METAS_T.ctr.val,true)};font-weight:500">${fPct(r.ctr)}</td>
-            <td style="padding:10px 12px;color:${sc(r.cpm,METAS_T.cpm.val,false)};font-weight:500">${fBRL(r.cpm)}</td>
-            <td style="padding:10px 12px;color:${sc(r.cpc,METAS_T.cpc.val,false)};font-weight:500">${fBRL(r.cpc)}</td>
-            <td style="padding:10px 12px">
+            <td style="padding:10px 14px;text-align:center;color:#1c1410;border-right:1px solid var(--border)">${fBRL(r.spend)}</td>
+            <td style="padding:10px 14px;text-align:center;color:#1c1410;border-right:1px solid var(--border)">${r.qtd}</td>
+            <td style="padding:10px 14px;text-align:center;color:${sc(r.cpv,META_CPV,false)};font-weight:500;border-right:1px solid var(--border)">${r.qtd>0?fBRL(r.cpv):"—"}</td>
+            <td style="padding:10px 14px;text-align:center;color:${sc(r.ticket,META_TICKET,true)};font-weight:500;border-right:1px solid var(--border)">${r.qtd>0?fBRL(r.ticket):"—"}</td>
+            <td style="padding:10px 14px;text-align:center;color:${sc(r.ctr,METAS_T.ctr.val,true)};font-weight:500;border-right:1px solid var(--border)">${fPct(r.ctr)}</td>
+            <td style="padding:10px 14px;text-align:center;color:${sc(r.cpm,METAS_T.cpm.val,false)};font-weight:500;border-right:1px solid var(--border)">${fBRL(r.cpm)}</td>
+            <td style="padding:10px 14px;text-align:center;color:${sc(r.cpc,METAS_T.cpc.val,false)};font-weight:500;border-right:1px solid var(--border)">${fBRL(r.cpc)}</td>
+            <td style="padding:10px 14px;text-align:center;border-left:1px solid var(--border)">
               ${r.igUrl?`<a href="${r.igUrl}" target="_blank" style="display:inline-flex;align-items:center;gap:3px;background:transparent;border:0.5px solid var(--border-h);color:var(--muted);padding:4px 9px;border-radius:5px;font-size:10px;text-decoration:none;white-space:nowrap">Ver ↗</a>`:"—"}
             </td>
           </tr>`).join("")}
