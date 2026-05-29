@@ -112,12 +112,13 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer}
     <a class="nav-item active" onclick="navTo('principal')">Principal</a>
     <a class="nav-item" onclick="navTo('trafego')">Métricas tráfego</a>
     <a class="nav-item disabled">Métricas do funil <span class="nav-soon">em breve</span></a>
-    <a class="nav-item disabled">Anúncios <span class="nav-soon">em breve</span></a>
+    <a class="nav-item" onclick="navTo('anuncios')">Anúncios</a>
   </nav>
   <div class="main">
     <div class="sw" id="loading"><div class="sp"></div><p class="st">Carregando dados...</p></div>
     <div id="page-principal" class="page active"></div>
     <div id="page-trafego"   class="page"></div>
+    <div id="page-anuncios"  class="page"></div>
   </div>
 </div>
 
@@ -150,11 +151,17 @@ const CHART_CPV   = "#a06000";
 // State
 const S = {
   meta:{}, vendas:{},
+  metaByAd:{},   // {adId: {name, date->row, spend, clicks, impressions, igUrl}}
+  metaByAdByDate:{}, // {advCode: {date: {spend,clicks,impressions}}}
+  vendasByAd:{}, // {adId: {qtd, valor, taxa}}
   loading:false, error:null, updated:null, firstLoad:true,
   // Principal
   startDate:nDaysAgoISO(29), endDate:todayISO(), activeQuick:"30d",
   // Tráfego
   tStartDate:nDaysAgoISO(29), tEndDate:todayISO(), tActiveQuick:"30d",
+  // Anúncios
+  aStartDate:nDaysAgoISO(29), aEndDate:todayISO(), aActiveQuick:"30d",
+  aSort:{col:"spend",dir:"desc"},
   // Overlay toggles por gráfico: {cpc:{inv:false,cpv:false}, ...}
   overlays:{cpc:{inv:false,cpv:false},ctr:{inv:false,cpv:false},cpm:{inv:false,cpv:false},
     txPagChk:{inv:false,cpv:false},txChkVnd:{inv:false,cpv:false},connect:{inv:false,cpv:false}},
@@ -189,6 +196,28 @@ function statusColor(val,meta,higherIsBetter){
   else { if(ratio<=1)return "#1a7a4a";if(ratio<=1.1)return "#c07800";return "#b91c1c"; }
 }
 
+// ── Ad ID / advCode helpers ───────────────────────────────────────────────
+// Extrai código adv/adi/adc + dígitos do nome do anúncio
+// Ignora prefixo "teste-"
+function extractAdvCode(name){
+  if(!name) return null;
+  // remove prefixo teste- case-insensitive
+  const clean=name.replace(/^teste-/i,"");
+  const m=clean.match(/ad[vic]\d+/i);
+  return m ? m[0].toLowerCase() : null;
+}
+
+// Extrai Ad ID numérico de 15-20 dígitos de uma string que pode ser:
+// "120247448870650228" ou "manual_defin-venda-adv289|120247448870650228::..."
+function extractAdId(raw){
+  if(!raw) return null;
+  // já é um número puro
+  if(/^\d{15,20}$/.test(raw.trim())) return raw.trim();
+  // busca sequência de 15-20 dígitos
+  const m=raw.match(/\d{15,20}/);
+  return m ? m[0] : null;
+}
+
 // ── Load data ──────────────────────────────────────────────────────────────
 async function loadData(){
   if(IS_FILE){ S.firstLoad=false;render();return; }
@@ -200,10 +229,14 @@ async function loadData(){
     if(!vr.ok)throw new Error(`HTTP ${vr.status} ao carregar Vendas`);
     const [mj,vj]=await Promise.all([mr.json(),vr.json()]);
 
-    // Meta
+    // Meta — por dia (para abas Principal e Tráfego)
     const mD={};
+    // Meta — por Ad ID (para aba Anúncios)
+    const mByAd={};
+    const mByAdByDate={};  // {advCode: {date: {spend,clicks,impressions}}}
     for(const r of parseSheet(mj)){
       const d=toISO(r["Date"]);if(!d)continue;
+      // Por dia
       if(!mD[d])mD[d]={spend:0,clicks:0,impressions:0,landingViews:0,checkouts:0,purchases:0,viewContent:0};
       mD[d].spend        += parseBRL(r["Spend (Cost, Amount Spent)"]);
       mD[d].clicks       += parseInt(r["Action Link Clicks"]||0)||0;
@@ -211,20 +244,55 @@ async function loadData(){
       mD[d].landingViews += parseInt(r["Action Landing Page View"]||0)||0;
       mD[d].checkouts    += parseInt(r["Action FB Pixel Initiate Checkout (Offsite Conversion)"]||0)||0;
       mD[d].viewContent  += parseInt(r["Action Omni View Content"]||0)||0;
-      // Purchases do pixel NÃO usado — usamos base vendas
+      // Por anúncio
+      const adId=r["Ad ID"]||r["Ad Id"]||"";
+      const adName=r["Ad Name"]||"";
+      const igUrl=r["Instagram Permalink URL"]||"";
+      const advCode=extractAdvCode(adName);
+      if(advCode){
+        if(!mByAd[advCode])mByAd[advCode]={advCode,adIds:new Set(),spend:0,clicks:0,impressions:0,igUrl:"",dates:new Set()};
+        if(adId) mByAd[advCode].adIds.add(adId);
+        mByAd[advCode].spend       += parseBRL(r["Spend (Cost, Amount Spent)"]);
+        mByAd[advCode].clicks      += parseInt(r["Action Link Clicks"]||0)||0;
+        mByAd[advCode].impressions += parseInt(r["Impressions"]||0)||0;
+        mByAd[advCode].dates.add(d);
+        if(igUrl && !mByAd[advCode].igUrl) mByAd[advCode].igUrl=igUrl;
+        // Por data (para filtrar por período na aba Anúncios)
+        if(!mByAdByDate[advCode]) mByAdByDate[advCode]={};
+        if(!mByAdByDate[advCode][d]) mByAdByDate[advCode][d]={spend:0,clicks:0,impressions:0,adIds:new Set(),igUrl:""};
+        mByAdByDate[advCode][d].spend       += parseBRL(r["Spend (Cost, Amount Spent)"]);
+        mByAdByDate[advCode][d].clicks      += parseInt(r["Action Link Clicks"]||0)||0;
+        mByAdByDate[advCode][d].impressions += parseInt(r["Impressions"]||0)||0;
+        if(adId) mByAdByDate[advCode][d].adIds.add(adId);
+        if(igUrl && !mByAdByDate[advCode][d].igUrl) mByAdByDate[advCode][d].igUrl=igUrl;
+      }
     }
     S.meta=mD;
+    S.metaByAd=mByAd;
+    S.metaByAdByDate=mByAdByDate;
 
-    // Vendas
+    // Vendas — por dia (Principal/Tráfego) e por Ad ID (Anúncios)
     const vD={};
+    const vByAd={};
     for(const r of parseSheet(vj)){
       const d=toISO(r["Data correta"]);if(!d)continue;
+      // Por dia
       if(!vD[d])vD[d]={qtd:0,valor:0,taxa:0};
       vD[d].qtd   += 1;
       vD[d].valor += parseBRL(r["Valor do produto"]);
       vD[d].taxa  += parseBRL(r["Taxa da plataforma"]);
+      // Por anúncio — extrair Ad ID do campo "Ad Id" (pode ser string longa)
+      const rawAdId=r["Ad Id"]||"";
+      const adId=extractAdId(rawAdId);
+      if(adId){
+        if(!vByAd[adId])vByAd[adId]={qtd:0,valor:0,taxa:0};
+        vByAd[adId].qtd   += 1;
+        vByAd[adId].valor += parseBRL(r["Valor do produto"]);
+        vByAd[adId].taxa  += parseBRL(r["Taxa da plataforma"]);
+      }
     }
     S.vendas=vD;
+    S.vendasByAd=vByAd;
 
     S.updated=new Date(Date.now()-3*60*60*1000).toLocaleTimeString("pt-BR");
     S.firstLoad=false;
@@ -321,13 +389,20 @@ function applyQuick(k,prefix=""){
     "7d":()=>({s:nDaysAgoISO(6),e:t}),"30d":()=>({s:nDaysAgoISO(29),e:t}),mes:()=>({s:firstOfMonthISO(),e:t})};
   const r=map[k]?.();if(!r)return;
   if(!prefix){S.startDate=r.s;S.endDate=r.e;S.activeQuick=k;}
-  else{S.tStartDate=r.s;S.tEndDate=r.e;S.tActiveQuick=k;}
+  else if(prefix==="t"){S.tStartDate=r.s;S.tEndDate=r.e;S.tActiveQuick=k;}
+  else if(prefix==="a"){S.aStartDate=r.s;S.aEndDate=r.e;S.aActiveQuick=k;}
   render();
 }
 function onDC(w,v,prefix=""){
   if(!prefix){if(w==="s")S.startDate=v;else S.endDate=v;S.activeQuick="";}
-  else{if(w==="s")S.tStartDate=v;else S.tEndDate=v;S.tActiveQuick="";}
+  else if(prefix==="t"){if(w==="s")S.tStartDate=v;else S.tEndDate=v;S.tActiveQuick="";}
+  else if(prefix==="a"){if(w==="s")S.aStartDate=v;else S.aEndDate=v;S.aActiveQuick="";}
   render();
+}
+function sortAnuncios(col){
+  if(S.aSort.col===col) S.aSort.dir=S.aSort.dir==="asc"?"desc":"asc";
+  else {S.aSort.col=col;S.aSort.dir="desc";}
+  renderAnuncios();
 }
 function toggleOverlay(key,which){
   S.overlays[key][which]=!S.overlays[key][which];
@@ -727,6 +802,150 @@ function renderTrafego(){
   });
 }
 
+// ── Render Anúncios ────────────────────────────────────────────────────────
+function renderAnuncios(){
+  const el=document.getElementById("page-anuncios");if(!el)return;
+
+  // Constrói tabela de anúncios no período selecionado
+  // Para cada advCode, soma invest da base Meta e vendas da base Vendas
+  // cruzando pelo Ad ID
+  function buildAdRows(start,end){
+    const rows=[];
+    for(const [advCode,meta] of Object.entries(S.metaByAd)){
+      // Usa dados pré-filtrados por período (metaByAdByDate)
+      const byDate=S.metaByAdByDate[advCode]||{};
+      let spend=0,clicks=0,impressions=0;
+      let igUrl="";
+      const adIdsInPeriod=new Set();
+      for(const [d,vals] of Object.entries(byDate)){
+        if(d>=start && d<=end){
+          spend+=vals.spend; clicks+=vals.clicks; impressions+=vals.impressions;
+          vals.adIds.forEach(id=>adIdsInPeriod.add(id));
+          if(!igUrl && vals.igUrl) igUrl=vals.igUrl;
+        }
+      }
+      if(spend===0) continue;
+      // Vendas: soma dos ad IDs ativos no período
+      let qtd=0,valor=0,taxa=0;
+      const useIds=adIdsInPeriod.size>0?adIdsInPeriod:meta.adIds;
+      for(const adId of useIds){
+        const v=S.vendasByAd[adId];
+        if(v){qtd+=v.qtd;valor+=v.valor;taxa+=v.taxa;}
+      }
+      if(!igUrl) igUrl=meta.igUrl;
+      const cpc=clicks>0?spend/clicks:0;
+      const ctr=impressions>0?(clicks/impressions)*100:0;
+      const cpm=impressions>0?(spend/impressions)*1000:0;
+      const cpv=qtd>0?spend/qtd:0;
+      const ticket=qtd>0?valor/qtd:0;
+      rows.push({advCode,spend,clicks,impressions,qtd,valor,cpc,ctr,cpm,cpv,ticket,igUrl});
+    }
+    // Filtra spend>0 e ordena
+    return rows.filter(r=>r.spend>0);
+  }
+
+  const rows=buildAdRows(S.aStartDate,S.aEndDate);
+
+  // Totais do período (usa dados diários já calculados)
+  const dailyA=[];
+  const allDates=new Set([...Object.keys(S.meta),...Object.keys(S.vendas)]);
+  for(const d of Array.from(allDates).sort()){
+    if(d<S.aStartDate||d>S.aEndDate) continue;
+    const m=S.meta[d]||{spend:0,clicks:0,impressions:0};
+    const v=S.vendas[d]||{qtd:0,valor:0};
+    dailyA.push({spend:m.spend,clicks:m.clicks,impressions:m.impressions,qtd:v.qtd,valor:v.valor});
+  }
+  const tot=dailyA.reduce((a,d)=>({
+    spend:a.spend+d.spend,clicks:a.clicks+d.clicks,
+    impressions:a.impressions+d.impressions,qtd:a.qtd+d.qtd,valor:a.valor+d.valor
+  }),{spend:0,clicks:0,impressions:0,qtd:0,valor:0});
+  const totCpc=tot.clicks>0?tot.spend/tot.clicks:0;
+  const totCtr=tot.impressions>0?(tot.clicks/tot.impressions)*100:0;
+  const totCpm=tot.impressions>0?(tot.spend/tot.impressions)*1000:0;
+  const totCpv=tot.qtd>0?tot.spend/tot.qtd:0;
+  const totTicket=tot.qtd>0?tot.valor/tot.qtd:0;
+
+  // Ordenação
+  const {col,dir}=S.aSort;
+  const sorted=[...rows].sort((a,b)=>{
+    const av=a[col]??0, bv=b[col]??0;
+    if(typeof av==="string") return dir==="asc"?av.localeCompare(bv):bv.localeCompare(av);
+    return dir==="asc"?av-bv:bv-av;
+  });
+
+  function thSort(c,lbl){
+    const active=col===c;
+    const arrow=active?(dir==="asc"?" ↑":" ↓"):" ↕";
+    const style=active?"color:#1c1410;":"";
+    return `<th onclick="sortAnuncios('${c}')" style="cursor:pointer;user-select:none;${style}">${lbl}<span style="color:${active?"#e8621a":"#d8cfc3"};font-size:10px;margin-left:3px">${arrow}</span></th>`;
+  }
+
+  function sc(v,meta,hi){return statusColor(v,meta,hi);}
+
+  el.innerHTML=`
+    <div class="hdr">
+      <div>
+        <div class="hdr-title">Anúncios</div>
+        <div class="hdr-sub">atualizado em: ${S.updated||"—"} · ${sorted.length} anúncios</div>
+      </div>
+      <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
+    </div>
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+
+    ${periodBar(S.aStartDate,S.aEndDate,S.aActiveQuick,"a")}
+
+    <div class="section-lbl">Resumo do período</div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:20px">
+      <div class="kc"><div class="kc-lbl">Investimento</div><div class="kc-val" style="color:#1c1410;font-size:18px">${fBRL(tot.spend)}</div></div>
+      <div class="kc"><div class="kc-lbl">Vendas</div><div class="kc-val" style="color:#1c1410;font-size:18px">${tot.qtd}</div></div>
+      <div class="kc"><div class="kc-lbl">Custo por Venda</div><div class="kc-val" style="color:${sc(totCpv,META_CPV,false)};font-size:18px">${fBRL(totCpv)}</div><div class="kc-sub">Meta: ${fBRL(META_CPV)}</div></div>
+      <div class="kc"><div class="kc-lbl">Ticket Médio</div><div class="kc-val" style="color:${sc(totTicket,META_TICKET,true)};font-size:18px">${fBRL(totTicket)}</div><div class="kc-sub">Meta: ${fBRL(META_TICKET)}</div></div>
+      <div class="kc"><div class="kc-lbl">CTR</div><div class="kc-val" style="color:${sc(totCtr,METAS_T.ctr.val,true)};font-size:18px">${fPct(totCtr)}</div><div class="kc-sub">Meta: ${fPct(METAS_T.ctr.val)}</div></div>
+      <div class="kc"><div class="kc-lbl">CPM</div><div class="kc-val" style="color:${sc(totCpm,METAS_T.cpm.val,false)};font-size:18px">${fBRL(totCpm)}</div><div class="kc-sub">Meta: ${fBRL(METAS_T.cpm.val)}</div></div>
+      <div class="kc"><div class="kc-lbl">CPC</div><div class="kc-val" style="color:${sc(totCpc,METAS_T.cpc.val,false)};font-size:18px">${fBRL(totCpc)}</div><div class="kc-sub">Meta: ${fBRL(METAS_T.cpc.val)}</div></div>
+    </div>
+
+    ${statusLegend()}
+
+    <div class="section-lbl">Anúncios com investimento no período</div>
+    <div style="background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:20px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead>
+          <tr style="border-bottom:0.5px solid var(--border);background:var(--bg)">
+            ${thSort("advCode","Anúncio")}
+            ${thSort("spend","Investimento")}
+            ${thSort("qtd","Vendas")}
+            ${thSort("cpv","Custo/Venda")}
+            ${thSort("ticket","Ticket Médio")}
+            ${thSort("ctr","CTR")}
+            ${thSort("cpm","CPM")}
+            ${thSort("cpc","CPC")}
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted.map(r=>`
+          <tr style="border-bottom:0.5px solid var(--bg)">
+            <td style="padding:10px 12px">
+              <span style="background:#f3f1ed;border:0.5px solid var(--border-h);border-radius:5px;padding:2px 8px;font-size:10px;font-weight:600;color:#1c1410;font-family:'DM Mono',monospace">${r.advCode}</span>
+            </td>
+            <td style="padding:10px 12px;color:#1c1410">${fBRL(r.spend)}</td>
+            <td style="padding:10px 12px;color:#1c1410">${r.qtd}</td>
+            <td style="padding:10px 12px;color:${sc(r.cpv,META_CPV,false)};font-weight:500">${r.qtd>0?fBRL(r.cpv):"—"}</td>
+            <td style="padding:10px 12px;color:${sc(r.ticket,META_TICKET,true)};font-weight:500">${r.qtd>0?fBRL(r.ticket):"—"}</td>
+            <td style="padding:10px 12px;color:${sc(r.ctr,METAS_T.ctr.val,true)};font-weight:500">${fPct(r.ctr)}</td>
+            <td style="padding:10px 12px;color:${sc(r.cpm,METAS_T.cpm.val,false)};font-weight:500">${fBRL(r.cpm)}</td>
+            <td style="padding:10px 12px;color:${sc(r.cpc,METAS_T.cpc.val,false)};font-weight:500">${fBRL(r.cpc)}</td>
+            <td style="padding:10px 12px">
+              ${r.igUrl?`<a href="${r.igUrl}" target="_blank" style="display:inline-flex;align-items:center;gap:3px;background:transparent;border:0.5px solid var(--border-h);color:var(--muted);padding:4px 9px;border-radius:5px;font-size:10px;text-decoration:none;white-space:nowrap">Ver ↗</a>`:"—"}
+            </td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+    <p class="foot">Base Meta (Stract) + Base Vendas (Eduzz) · Google Sheets API v4</p>`;
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────
 function render(){
   const ld=document.getElementById("loading");
@@ -745,6 +964,7 @@ function render(){
   }
   if(S.currentPage==="principal") renderPrincipal();
   else if(S.currentPage==="trafego") renderTrafego();
+  else if(S.currentPage==="anuncios") renderAnuncios();
 }
 
 render();
