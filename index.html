@@ -119,10 +119,10 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer}
 <div class="layout">
   <nav class="sidebar">
     <div class="sidebar-logo">Dashboard</div>
-    <a class="nav-item active">📊 Principal</a>
-    <a class="nav-item disabled">📈 Métricas tráfego <span class="nav-soon">em breve</span></a>
-    <a class="nav-item disabled">🎯 Anúncios <span class="nav-soon">em breve</span></a>
-    <a class="nav-item disabled">🏠 Métricas produtos <span class="nav-soon">em breve</span></a>
+    <a class="nav-item active">Principal</a>
+    <a class="nav-item disabled">Métricas do funil <span class="nav-soon">em breve</span></a>
+    <a class="nav-item disabled">Métricas tráfego <span class="nav-soon">em breve</span></a>
+    <a class="nav-item disabled">Anúncios <span class="nav-soon">em breve</span></a>
   </nav>
   <div class="main">
     <div class="sw" id="loading"><div class="sp"></div><p class="st">Carregando dados...</p></div>
@@ -150,10 +150,13 @@ const S = {
 };
 
 // ── Date helpers ────────────────────────────────────────────────────────────
-function todayISO(){ return new Date().toISOString().split("T")[0] }
-function yesterdayISO(){ const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().split("T")[0] }
-function nDaysAgoISO(n){ const d=new Date();d.setDate(d.getDate()-n);return d.toISOString().split("T")[0] }
-function firstOfMonthISO(){ const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01` }
+// Todas as datas usam GMT-3 (São Paulo)
+function nowSP(){ return new Date(Date.now() - 3*60*60*1000); }
+function toISODate(d){ return d.toISOString().split("T")[0]; }
+function todayISO(){ return toISODate(nowSP()); }
+function yesterdayISO(){ const d=nowSP();d.setDate(d.getDate()-1);return toISODate(d); }
+function nDaysAgoISO(n){ const d=nowSP();d.setDate(d.getDate()-n);return toISODate(d); }
+function firstOfMonthISO(){ const d=nowSP();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`; }
 
 // ── Parse helpers ────────────────────────────────────────────────────────────
 function parseBRL(s){ if(!s||s==="-"||s==="0")return 0; return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",",".").trim())||0 }
@@ -206,11 +209,10 @@ async function loadData(){
     let ultimaData = null;
     for(const r of vRows){
       const d=toISO(r["Data correta"]); if(!d) continue;
-      if(!vD[d]) vD[d]={qtd:0,valor:0,taxaTotal:0};
-      vD[d].qtd        += 1;
-      // Valor do produto já inclui a taxa da plataforma (conforme instrução)
-      const valor = parseBRL(r["Valor do produto"]);
-      vD[d].valor      += valor;
+      if(!vD[d]) vD[d]={qtd:0,valor:0,taxa:0};
+      vD[d].qtd   += 1;
+      vD[d].valor += parseBRL(r["Valor do produto"]);
+      vD[d].taxa  += parseBRL(r["Taxa da plataforma"]);
       ultimaData = d;
     }
     S.vendas = vD;
@@ -235,10 +237,10 @@ function getDaily(){
   const all = new Set([...Object.keys(S.meta),...Object.keys(S.vendas)]);
   return Array.from(all).sort().filter(d=>d>=S.startDate&&d<=S.endDate).map(date=>{
     const m = S.meta[date]  || {spend:0,clicks:0,impressions:0};
-    const v = S.vendas[date] || {qtd:0,valor:0};
+    const v = S.vendas[date] || {qtd:0,valor:0,taxa:0};
     const custoReal = m.spend * TAXA_IMPOSTO;
-    // Faturamento já é líquido de taxa da plataforma (está na planilha)
-    const lucro = v.valor - custoReal;
+    // Lucro = Faturamento bruto − taxa plataforma − investimento×1,1215
+    const lucro = v.valor - v.taxa - custoReal;
     return {
       date, label:fDate(date),
       spend:m.spend, faturamento:v.valor, vendas:v.qtd,
@@ -252,8 +254,8 @@ function getDaily(){
 
 function getTotals(daily){
   const t = daily.reduce((a,d)=>({
-    spend:a.spend+d.spend, fat:a.fat+d.faturamento, vendas:a.vendas+d.vendas
-  }),{spend:0,fat:0,vendas:0});
+    spend:a.spend+d.spend, fat:a.fat+d.faturamento, vendas:a.vendas+d.vendas, taxa:a.taxa+(S.vendas[d.date]?.taxa||0)
+  }),{spend:0,fat:0,vendas:0,taxa:0});
   const custoReal = t.spend * TAXA_IMPOSTO;
   return {
     ...t,
@@ -261,7 +263,7 @@ function getTotals(daily){
     roas:   t.spend>0   ? t.fat/t.spend    : 0,
     cpv:    t.vendas>0  ? t.spend/t.vendas : 0,
     ticket: t.vendas>0  ? t.fat/t.vendas   : 0,
-    lucro:  t.fat - custoReal,
+    lucro:  t.fat - t.taxa - custoReal,
   };
 }
 
@@ -480,7 +482,7 @@ function render(){
     <div class="hdr">
       <div>
         <div class="hdr-title">Manual Definitivo para Construção e Venda de Casas Financiadas</div>
-        <div class="hdr-sub">${S.ultimaVenda ? `última venda: ${S.ultimaVenda}` : "aguardando dados..."}${daily.length>0 ? ` · ${daily.length} dias` : ""}</div>
+        <div class="hdr-sub">atualizado em: ${S.updated || "—"}${daily.length>0 ? ` · ${daily.length} dias` : ""}</div>
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
@@ -510,7 +512,7 @@ function render(){
     <div class="g3" style="margin-bottom:18px">
       ${kpi("Custo por Venda", fBRL(totals.cpv),    `Meta: ${fBRL(META_CPV)}`,                 cpvC)}
       ${kpi("Ticket Médio",    fBRL(totals.ticket), `Meta: ${fBRL(META_TICKET)}`,              ticketC)}
-      ${kpi("Lucro Bruto",     fBRL(totals.lucro),  "Fat. − invest.×1,1215",                  lucroC)}
+      ${kpi("Lucro Bruto",     fBRL(totals.lucro),  "",  lucroC)}
     </div>
 
     <div class="status-legend">
