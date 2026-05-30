@@ -1060,13 +1060,15 @@ function buildFunilData(rows, start, end){
     const d = toISO(r["Data da compra"]||r["Data"]) || "";
     const status = (r["Status da compra"]||"").trim();
     const valor  = parseBRL(r["Valor do produto"]);
-    buyer.products.push({id:prodId, date:d, status, valor});
+    const taxa   = parseBRL(r["Taxa da plataforma"]);
+    buyer.products.push({id:prodId, date:d, status, valor, taxa});
   }
 
   // Conta: só conta produtos comprados APÓS a primeira compra do manual (status Paga)
   const counts = {};
   const fat    = {};
-  FUNIL_STEPS.forEach(s=>{ counts[s.id]=0; fat[s.id]=0; });
+  const taxa   = {};
+  FUNIL_STEPS.forEach(s=>{ counts[s.id]=0; fat[s.id]=0; taxa[s.id]=0; });
 
   // Status analysis
   const statusCounts = {};
@@ -1094,9 +1096,9 @@ function buildFunilData(rows, start, end){
 
     counts.manual++;
     fat.manual += manualPurchase.valor;
+    taxa.manual += manualPurchase.taxa||0;
 
     const manualDate = manualPurchase.date;
-    // outros produtos pagos APÓS a data do manual
     const others = paid.filter(p=>p.id!=="manual" && p.date>=manualDate);
     const seen = new Set();
     for(const p of others){
@@ -1104,12 +1106,14 @@ function buildFunilData(rows, start, end){
         seen.add(p.id);
         counts[p.id]++;
         fat[p.id]+=p.valor;
+        taxa[p.id]+=(p.taxa||0);
       }
     }
   }
 
   const manualCount = counts.manual || 1;
-  const totalFat = Object.values(fat).reduce((a,b)=>a+b,0);
+  const totalFat  = Object.values(fat).reduce((a,b)=>a+b,0);
+  const totalTaxa = Object.values(taxa).reduce((a,b)=>a+b,0);
 
   // Spend no período (da base Meta)
   let totalSpend=0;
@@ -1124,7 +1128,7 @@ function buildFunilData(rows, start, end){
     counts, fat, manualCount, totalFat, totalSpend,
     roas: totalSpend>0 ? totalFat/totalSpend : 0,
     ltv:  totalFat/manualCount,
-    lucro: totalFat - (totalSpend*TAXA_IMPOSTO),
+    lucro: totalFat - totalTaxa - (totalSpend*TAXA_IMPOSTO),
     ascensao: manualCount>0 ? ((manualCount - (manualCount - Object.keys(counts).filter(k=>k!=="manual"&&counts[k]>0).reduce((a,k)=>Math.min(a,counts.manual),counts.manual)))/manualCount)*100 : 0,
     // Taxa real: % de compradores do manual que compraram qualquer outro produto
     taxaAscensao: manualCount>0 ? (Object.values({...counts,manual:0}).reduce((a,b)=>a+(b>0?1:0),0) > 0
@@ -1153,15 +1157,17 @@ function renderFunil(){
   const fd = buildFunilData(S.funilRows, S.fStartDate||"", S.fEndDate||"");
   const {counts,fat,manualCount,totalFat,totalSpend,roas,ltv,lucro,taxaAscensao,statusCounts,statusVals} = fd;
 
-  const QS=[{k:"all",l:"Todos"},{k:"30d",l:"30 dias"},{k:"mes",l:"Este mês"},{k:"7d",l:"7 dias"}];
+  const QS=[{k:"all",l:"Todos"},{k:"hoje",l:"Hoje"},{k:"ontem",l:"Ontem"},{k:"7d",l:"7 dias"},{k:"30d",l:"30 dias"},{k:"mes",l:"Este mês"}];
 
   function applyFunilQuick(k){
     S.fActiveQuick=k;
     const t=todayISO();
-    if(k==="all"){S.fStartDate="";S.fEndDate="";}
-    else if(k==="7d"){S.fStartDate=nDaysAgoISO(6);S.fEndDate=t;}
-    else if(k==="30d"){S.fStartDate=nDaysAgoISO(29);S.fEndDate=t;}
-    else if(k==="mes"){S.fStartDate=firstOfMonthISO();S.fEndDate=t;}
+    if(k==="all")     {S.fStartDate="";S.fEndDate="";}
+    else if(k==="hoje") {S.fStartDate=t;S.fEndDate=t;}
+    else if(k==="ontem"){const y=yesterdayISO();S.fStartDate=y;S.fEndDate=y;}
+    else if(k==="7d")   {S.fStartDate=nDaysAgoISO(6);S.fEndDate=t;}
+    else if(k==="30d")  {S.fStartDate=nDaysAgoISO(29);S.fEndDate=t;}
+    else if(k==="mes")  {S.fStartDate=firstOfMonthISO();S.fEndDate=t;}
     renderFunil();
   }
   window.applyFunilQuick=applyFunilQuick;
@@ -1234,131 +1240,132 @@ function renderFunil(){
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px">
       <div class="kc"><div class="kc-lbl">Investimento</div><div class="kc-val" style="color:#1c1410;font-size:17px">${fBRL(totalSpend)}</div><div class="kc-sub">Meta Ads</div></div>
       <div class="kc"><div class="kc-lbl">Faturamento total</div><div class="kc-val" style="color:#1c1410;font-size:17px">${fBRL(totalFat)}</div><div class="kc-sub">todos os produtos</div></div>
-      <div class="kc"><div class="kc-lbl">ROAS funil</div><div class="kc-val" style="color:${roasC};font-size:17px">${roas.toFixed(2)}x</div><div class="kc-sub">fat. total ÷ invest.</div></div>
-      <div class="kc"><div class="kc-lbl">Lucro bruto</div><div class="kc-val" style="color:${lucroC};font-size:17px">${fBRL(lucro)}</div><div class="kc-sub">fat. − invest.×1,12</div></div>
+      <div class="kc"><div class="kc-lbl">ROAS funil</div><div class="kc-val" style="color:${roasC};font-size:17px">${roas.toFixed(2)}x</div></div>
+      <div class="kc"><div class="kc-lbl">Lucro bruto</div><div class="kc-val" style="color:${lucroC};font-size:17px">${fBRL(lucro)}</div></div>
       <div class="kc"><div class="kc-lbl">LTV médio</div><div class="kc-val" style="color:#1c1410;font-size:17px">${fBRL(ltv)}</div><div class="kc-sub">por comprador Manual</div></div>
       <div class="kc"><div class="kc-lbl">Taxa de ascensão</div><div class="kc-val" style="color:#1c1410;font-size:17px">${taxaAscensao.toFixed(1)}%</div><div class="kc-sub">compraram 2+ produtos</div></div>
     </div>
 
-    <!-- Funil SVG -->
-    <div class="cc" style="margin-bottom:16px;padding:18px">
-      <div class="section-lbl" style="margin-top:0;margin-bottom:14px">Funil de conversão</div>
-      <svg viewBox="0 0 680 460" xmlns="http://www.w3.org/2000/svg" width="100%" role="img" aria-label="Funil de vendas">
-        <defs>
-          <marker id="arf" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-            <path d="M0,1 L6,3.5 L0,6 Z" fill="#a0917e" opacity="0.6"/>
-          </marker>
-        </defs>
+    <!-- Funil + Perdas lado a lado -->
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:14px;margin-bottom:20px;align-items:start">
 
-        <!-- MANUAL -->
-        <polygon points="200,0 480,0 455,85 225,85" fill="${COLORS.manual.fill}"/>
-        ${bar("manual",233,70,214,"white")}
-        <text x="340" y="28" text-anchor="middle" font-size="13" font-weight="500" fill="${COLORS.manual.text}">Manual Definitivo</text>
-        <text x="340" y="46" text-anchor="middle" font-size="10" fill="${COLORS.manual.sub}">Entrada · 100%</text>
-        <line x1="456" y1="40" x2="492" y2="40" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-        <text x="500" y="30" font-size="11" font-weight="500" fill="var(--text)">${counts.manual} compradores</text>
-        <text x="500" y="46" font-size="10" fill="#a0917e">${fBRL(fat.manual)} faturamento</text>
+      <!-- Funil SVG -->
+      <div class="cc" style="padding:16px">
+        <div class="section-lbl" style="margin-top:0;margin-bottom:12px">Funil de conversão</div>
+        <svg viewBox="0 0 520 420" xmlns="http://www.w3.org/2000/svg" width="100%" role="img" aria-label="Funil de vendas">
+          <defs>
+            <marker id="arf" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+              <path d="M0,1 L6,3.5 L0,6 Z" fill="#a0917e" opacity="0.6"/>
+            </marker>
+          </defs>
 
-        <!-- seta OBs -->
-        <text x="340" y="103" text-anchor="middle" font-size="10" fill="#a0917e">▼  ${pct("checklist").toFixed(0)}% checklist  ·  ${pct("planFin").toFixed(0)}% planilha financiamento</text>
-        <text x="340" y="118" text-anchor="middle" font-size="9" fill="#a0917e" font-style="italic">ocorrem simultaneamente no checkout</text>
+          <!-- MANUAL -->
+          <polygon points="120,0 400,0 375,80 145,80" fill="${COLORS.manual.fill}"/>
+          ${bar("manual",153,66,194,"white")}
+          <text x="260" y="26" text-anchor="middle" font-size="12" font-weight="500" fill="${COLORS.manual.text}">Manual Definitivo</text>
+          <text x="260" y="42" text-anchor="middle" font-size="9" fill="${COLORS.manual.sub}">Entrada · 100%</text>
+          <line x1="375" y1="36" x2="408" y2="36" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
+          <text x="414" y="28" font-size="10" font-weight="500" fill="var(--text)">${counts.manual}</text>
+          <text x="414" y="41" font-size="9" fill="#a0917e">${fBRLShort(fat.manual)}</text>
 
-        <!-- OB1 CHECKLIST -->
-        <polygon points="225,126 331,126 319,196 237,196" fill="${COLORS.checklist.fill}"/>
-        ${bar("checklist",241,183,74,"white")}
-        <text x="278" y="151" text-anchor="middle" font-size="11" font-weight="500" fill="${COLORS.checklist.text}">Checklist</text>
-        <text x="278" y="165" text-anchor="middle" font-size="9" fill="${COLORS.checklist.sub}">OB1 · ${pct("checklist").toFixed(0)}%</text>
-        <line x1="225" y1="158" x2="187" y2="158" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-        <text x="0" y="148" font-size="11" font-weight="500" fill="var(--text)">${counts.checklist} compradores</text>
-        <text x="0" y="163" font-size="10" fill="#a0917e">${fBRL(fat.checklist)} fat.</text>
+          <!-- seta OBs -->
+          <text x="260" y="97" text-anchor="middle" font-size="9" fill="#a0917e">▼  ${pct("checklist").toFixed(0)}% checklist · ${pct("planFin").toFixed(0)}% plan. financiamento</text>
+          <text x="260" y="110" text-anchor="middle" font-size="8" fill="#a0917e" font-style="italic">checkout simultâneo</text>
 
-        <!-- gap OBs -->
-        <rect x="331" y="126" width="18" height="70" fill="var(--bg)"/>
-        <line x1="340" y1="126" x2="340" y2="196" stroke="#d8cfc3" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>
+          <!-- OB1 CHECKLIST -->
+          <polygon points="145,117 248,117 237,183 156,183" fill="${COLORS.checklist.fill}"/>
+          ${bar("checklist",160,172,73,"white")}
+          <text x="196" y="141" text-anchor="middle" font-size="10" font-weight="500" fill="${COLORS.checklist.text}">Checklist</text>
+          <text x="196" y="155" text-anchor="middle" font-size="8" fill="${COLORS.checklist.sub}">OB1 · ${pct("checklist").toFixed(0)}%</text>
+          <line x1="145" y1="147" x2="112" y2="147" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
+          <text x="0" y="139" font-size="10" font-weight="500" fill="var(--text)">${counts.checklist}</text>
+          <text x="0" y="152" font-size="9" fill="#a0917e">${fBRLShort(fat.checklist)}</text>
 
-        <!-- OB2 PLANILHA FIN -->
-        <polygon points="349,126 455,126 443,196 361,196" fill="${COLORS.planFin.fill}"/>
-        ${bar("planFin",365,183,74,"white")}
-        <text x="402" y="149" text-anchor="middle" font-size="11" font-weight="500" fill="${COLORS.planFin.text}">Plan. Financiamento</text>
-        <text x="402" y="164" text-anchor="middle" font-size="9" fill="${COLORS.planFin.sub}">OB2 · ${pct("planFin").toFixed(0)}%</text>
-        <line x1="443" y1="158" x2="479" y2="158" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-        <text x="487" y="148" font-size="11" font-weight="500" fill="var(--text)">${counts.planFin} compradores</text>
-        <text x="487" y="163" font-size="10" fill="#a0917e">${fBRL(fat.planFin)} fat.</text>
+          <!-- gap OBs -->
+          <rect x="248" y="117" width="14" height="66" fill="var(--bg)"/>
+          <line x1="255" y1="117" x2="255" y2="183" stroke="#d8cfc3" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
 
-        <!-- seta upsell -->
-        <text x="340" y="214" text-anchor="middle" font-size="10" fill="#a0917e">▼  ${pct("planLucro").toFixed(0)}% compraram a planilha lucro</text>
+          <!-- OB2 PLANILHA FIN -->
+          <polygon points="262,117 375,117 364,183 273,183" fill="${COLORS.planFin.fill}"/>
+          ${bar("planFin",277,172,83,"white")}
+          <text x="318" y="139" text-anchor="middle" font-size="10" font-weight="500" fill="${COLORS.planFin.text}">Plan. Financiamento</text>
+          <text x="318" y="154" text-anchor="middle" font-size="8" fill="${COLORS.planFin.sub}">OB2 · ${pct("planFin").toFixed(0)}%</text>
+          <line x1="364" y1="147" x2="397" y2="147" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
+          <text x="403" y="139" font-size="10" font-weight="500" fill="var(--text)">${counts.planFin}</text>
+          <text x="403" y="152" font-size="9" fill="#a0917e">${fBRLShort(fat.planFin)}</text>
 
-        <!-- UPSELL -->
-        <polygon points="237,222 443,222 419,305 261,305" fill="${COLORS.planLucro.fill}"/>
-        ${bar("planLucro",267,291,148,"white")}
-        <text x="340" y="251" text-anchor="middle" font-size="12" font-weight="500" fill="${COLORS.planLucro.text}">Planilha Lucro</text>
-        <text x="340" y="268" text-anchor="middle" font-size="10" fill="${COLORS.planLucro.sub}">Upsell · ${pct("planLucro").toFixed(0)}%</text>
-        <line x1="237" y1="261" x2="187" y2="261" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-        <text x="0" y="251" font-size="11" font-weight="500" fill="var(--text)">${counts.planLucro} compradores</text>
-        <text x="0" y="266" font-size="10" fill="#a0917e">${fBRL(fat.planLucro)} fat.</text>
+          <!-- seta upsell -->
+          <text x="260" y="200" text-anchor="middle" font-size="9" fill="#a0917e">▼  ${pct("planLucro").toFixed(0)}% compraram a planilha lucro</text>
 
-        <!-- seta curso -->
-        <text x="340" y="322" text-anchor="middle" font-size="10" fill="#a0917e">▼  ${pct("curso").toFixed(1)}% compraram o curso</text>
+          <!-- UPSELL -->
+          <polygon points="156,208 364,208 342,288 178,288" fill="${COLORS.planLucro.fill}"/>
+          ${bar("planLucro",184,276,154,"white")}
+          <text x="260" y="235" text-anchor="middle" font-size="11" font-weight="500" fill="${COLORS.planLucro.text}">Planilha Lucro</text>
+          <text x="260" y="251" text-anchor="middle" font-size="9" fill="${COLORS.planLucro.sub}">Upsell · ${pct("planLucro").toFixed(0)}%</text>
+          <line x1="156" y1="245" x2="112" y2="245" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
+          <text x="0" y="237" font-size="10" font-weight="500" fill="var(--text)">${counts.planLucro}</text>
+          <text x="0" y="250" font-size="9" fill="#a0917e">${fBRLShort(fat.planLucro)}</text>
 
-        <!-- CURSO -->
-        <polygon points="261,332 419,332 396,410 284,410" fill="${COLORS.curso.fill}"/>
-        ${bar("curso",288,396,106,"white")}
-        <text x="340" y="360" text-anchor="middle" font-size="12" font-weight="500" fill="${COLORS.curso.text}">Curso</text>
-        <text x="340" y="376" text-anchor="middle" font-size="10" fill="${COLORS.curso.sub}">Ascensão · ${pct("curso").toFixed(1)}%</text>
-        <line x1="396" y1="368" x2="432" y2="368" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-        <text x="440" y="358" font-size="11" font-weight="500" fill="var(--text)">${counts.curso} compradores</text>
-        <text x="440" y="373" font-size="10" fill="#a0917e">${fBRL(fat.curso)} fat.</text>
+          <!-- seta curso -->
+          <text x="260" y="304" text-anchor="middle" font-size="9" fill="#a0917e">▼  ${pct("curso").toFixed(1)}% compraram o curso</text>
 
-        <!-- ponta -->
-        <polygon points="284,413 396,413 378,443 302,443" fill="#712B13"/>
-      </svg>
-    </div>
+          <!-- CURSO -->
+          <polygon points="178,312 342,312 322,385 198,385" fill="${COLORS.curso.fill}"/>
+          ${bar("curso",202,373,116,"white")}
+          <text x="260" y="338" text-anchor="middle" font-size="11" font-weight="500" fill="${COLORS.curso.text}">Curso</text>
+          <text x="260" y="354" text-anchor="middle" font-size="9" fill="${COLORS.curso.sub}">Ascensão · ${pct("curso").toFixed(1)}%</text>
+          <line x1="322" y1="346" x2="355" y2="346" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
+          <text x="361" y="338" font-size="10" font-weight="500" fill="var(--text)">${counts.curso}</text>
+          <text x="361" y="351" font-size="9" fill="#a0917e">${fBRLShort(fat.curso)}</text>
 
-    <!-- Análise de perdas -->
-    <div class="section-lbl">Análise de perdas</div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
-
-      <!-- Reembolsos -->
-      <div class="kc" style="border-left:3px solid #b91c1c">
-        <div class="kc-lbl" style="color:#b91c1c">Reembolsos</div>
-        <div class="kc-val" style="color:#b91c1c;font-size:20px">${fBRL(valReemb)}</div>
-        <div class="kc-sub" style="margin-top:6px">${qtdReemb} pedidos · ${pctReemb.toFixed(1)}% do fat.</div>
-        <div style="margin-top:8px;display:flex;gap:8px">
-          <div style="flex:1;background:#f3f1ed;border-radius:6px;padding:6px 8px">
-            <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">Reembolsado</div>
-            <div style="font-size:13px;font-weight:500;color:#b91c1c">${statusCounts["Reembolsado"]||0}</div>
-          </div>
-          <div style="flex:1;background:#f3f1ed;border-radius:6px;padding:6px 8px">
-            <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">Ag. reembolso</div>
-            <div style="font-size:13px;font-weight:500;color:#c07800">${statusCounts["Aguardando reembolso"]||0}</div>
-          </div>
-        </div>
+          <!-- ponta -->
+          <polygon points="198,388 322,388 308,415 212,415" fill="#712B13"/>
+        </svg>
       </div>
 
-      <!-- Em recuperação -->
-      <div class="kc" style="border-left:3px solid #c07800">
-        <div class="kc-lbl" style="color:#c07800">Em recuperação</div>
-        <div class="kc-val" style="color:#c07800;font-size:20px">${fBRL(valRec)}</div>
-        <div class="kc-sub" style="margin-top:6px">${qtdRec} pedidos · ${pctRec.toFixed(1)}% do fat.</div>
-        <div style="margin-top:8px;background:#f3f1ed;border-radius:6px;padding:6px 8px">
-          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">Valor potencial</div>
-          <div style="font-size:13px;font-weight:500;color:#1a7a4a">+ ${fBRL(valRec)}</div>
-        </div>
-      </div>
+      <!-- Análise de perdas -->
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="section-lbl" style="margin-top:0;margin-bottom:2px">Análise de perdas</div>
 
-      <!-- Não convertidos -->
-      <div class="kc" style="border-left:3px solid #a0917e">
-        <div class="kc-lbl">Não convertidos</div>
-        <div class="kc-val" style="color:#1c1410;font-size:20px">${fBRL(valAbrt)}</div>
-        <div class="kc-sub" style="margin-top:6px">${qtdAbrt} pedidos · ${pctAbrt.toFixed(1)}% do fat.</div>
-        <div style="margin-top:8px;display:flex;gap:8px">
-          <div style="flex:1;background:#f3f1ed;border-radius:6px;padding:6px 8px">
-            <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">Aberto</div>
-            <div style="font-size:13px;font-weight:500">${statusCounts["Aberto"]||0}</div>
+        <div class="kc" style="border-left:3px solid #b91c1c">
+          <div class="kc-lbl" style="color:#b91c1c">Reembolsos</div>
+          <div class="kc-val" style="color:#b91c1c;font-size:19px">${fBRL(valReemb)}</div>
+          <div class="kc-sub">${qtdReemb} pedidos · ${pctReemb.toFixed(1)}% do fat.</div>
+          <div style="margin-top:8px;display:flex;gap:6px">
+            <div style="flex:1;background:#f3f1ed;border-radius:5px;padding:5px 7px">
+              <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Reembolsado</div>
+              <div style="font-size:13px;font-weight:500;color:#b91c1c">${statusCounts["Reembolsado"]||0}</div>
+            </div>
+            <div style="flex:1;background:#f3f1ed;border-radius:5px;padding:5px 7px">
+              <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Ag. reembolso</div>
+              <div style="font-size:13px;font-weight:500;color:#c07800">${statusCounts["Aguardando reembolso"]||0}</div>
+            </div>
           </div>
-          <div style="flex:1;background:#f3f1ed;border-radius:6px;padding:6px 8px">
-            <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">Ag. pagamento</div>
-            <div style="font-size:13px;font-weight:500">${statusCounts["Aguardando pagamento"]||0}</div>
+        </div>
+
+        <div class="kc" style="border-left:3px solid #c07800">
+          <div class="kc-lbl" style="color:#c07800">Em recuperação</div>
+          <div class="kc-val" style="color:#c07800;font-size:19px">${fBRL(valRec)}</div>
+          <div class="kc-sub">${qtdRec} pedidos · ${pctRec.toFixed(1)}% do fat.</div>
+          <div style="margin-top:8px;background:#f3f1ed;border-radius:5px;padding:5px 7px">
+            <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Valor potencial</div>
+            <div style="font-size:13px;font-weight:500;color:#1a7a4a">+ ${fBRL(valRec)}</div>
+          </div>
+        </div>
+
+        <div class="kc" style="border-left:3px solid #a0917e">
+          <div class="kc-lbl">Não convertidos</div>
+          <div class="kc-val" style="color:#1c1410;font-size:19px">${fBRL(valAbrt)}</div>
+          <div class="kc-sub">${qtdAbrt} pedidos · ${pctAbrt.toFixed(1)}% do fat.</div>
+          <div style="margin-top:8px;display:flex;gap:6px">
+            <div style="flex:1;background:#f3f1ed;border-radius:5px;padding:5px 7px">
+              <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Aberto</div>
+              <div style="font-size:13px;font-weight:500">${statusCounts["Aberto"]||0}</div>
+            </div>
+            <div style="flex:1;background:#f3f1ed;border-radius:5px;padding:5px 7px">
+              <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Ag. pagamento</div>
+              <div style="font-size:13px;font-weight:500">${statusCounts["Aguardando pagamento"]||0}</div>
+            </div>
           </div>
         </div>
       </div>
