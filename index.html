@@ -186,6 +186,11 @@ const S = {
   fStartDate:"",   // funil: sem filtro de data por default (all time)
   fEndDate:"",
   fActiveQuick:"all",
+  aTab:"tempo",
+  anaStartDate:"", anaEndDate:"", anaActiveQuick:"all",
+  anaTempoProd1:"manual", anaTempoProd2:"curso",
+  anaJornadaFiltro:"all", anaJornadaSort:"freq",
+  anaStatusFiltro:"all", anaStatusGroup:"produto",
   // Overlay toggles por gráfico: {cpc:{inv:false,cpv:false}, ...}
   overlays:{cpc:{inv:false,cpv:false},ctr:{inv:false,cpv:false},cpm:{inv:false,cpv:false},
     txPagChk:{inv:false,cpv:false},txChkVnd:{inv:false,cpv:false},connect:{inv:false,cpv:false}},
@@ -1125,7 +1130,7 @@ function buildFunilData(rows, start, end){
   }
 
   return {
-    counts, fat, manualCount, totalFat, totalSpend,
+    counts, fat, manualCount, totalFat, totalSpend, buyers,
     roas: totalSpend>0 ? totalFat/totalSpend : 0,
     ltv:  totalFat/manualCount,
     lucro: totalFat - totalTaxa - (totalSpend*TAXA_IMPOSTO),
@@ -1371,7 +1376,262 @@ function renderFunil(){
       </div>
     </div>
 
+    <hr style="border:none;border-top:1px solid var(--border);margin:28px 0"/>
+    <div class="section-lbl">Análise exploratória</div>
+    ${buildAnaContent(fd,fd.buyers||new Map())}
     <p class="foot">Base Vendas - Completo (Eduzz) + Base Meta (Stract) · Google Sheets API v4</p>`;
+}
+
+
+// ── buildAnaContent — Análise exploratória dentro do Funil ─────────────────
+function buildAnaContent(fd, buyers){
+  const ALL_STATUS=["Paga","Aberto","Aguardando pagamento","Em recuperacao","Reembolsado","Aguardando reembolso"];
+
+  // Produtos disponíveis detectados automaticamente
+  const prodsFound=new Set();
+  for(const r of S.funilRows){ const id=classifyProduct(r["Nome do produto"]); if(id) prodsFound.add(id); }
+  const prods=FUNIL_STEPS.filter(s=>prodsFound.has(s.id));
+
+  // Filtra rows por período desta aba
+  const start=S.anaStartDate||"";
+  const end=S.anaEndDate||"";
+  const rows=(start||end)?S.funilRows.filter(r=>{
+    const d=toISO(r["Data da compra"]||r["Data"]);
+    if(!d) return false;
+    if(start&&d<start) return false;
+    if(end&&d>end) return false;
+    return true;
+  }):S.funilRows;
+
+  // Re-constrói buyers para o período desta aba se diferente do funil
+  let ana_buyers=buyers;
+  if(start||end){
+    ana_buyers=new Map();
+    function getOrCreate2(r){
+      const keys=[(r["Email"]||"").toLowerCase().trim(),(r["CPF Comprador"]||"").replace(/\D/g,""),(r["Telefone"]||"").replace(/\D/g,"")].filter(Boolean);
+      for(const [,b] of ana_buyers){ for(const k of keys){ if(k&&b.keys.has(k)){ keys.forEach(k2=>{if(k2)b.keys.add(k2);}); return b; } } }
+      const b={keys:new Set(keys),products:[]};
+      ana_buyers.set(keys[0]||Math.random().toString(),b);
+      return b;
+    }
+    for(const r of rows){
+      const id=classifyProduct(r["Nome do produto"]);if(!id)continue;
+      const b=getOrCreate2(r);
+      const d=toISO(r["Data da compra"]||r["Data"])||"";
+      const st=(r["Status da compra"]||"").trim();
+      b.products.push({id,date:d,status:st});
+    }
+  }
+
+  const totalBuyers=ana_buyers.size;
+
+  // ── Tempo entre compras ───────────────────────────────────────────────────
+  function calcTempo(p1,p2){
+    const diffs=[];
+    for(const [,b] of ana_buyers){
+      const paid=b.products.filter(p=>p.status==="Paga");
+      const p1s=paid.filter(p=>p.id===p1).sort((a,z)=>a.date.localeCompare(z.date));
+      const p2s=paid.filter(p=>p.id===p2).sort((a,z)=>a.date.localeCompare(z.date));
+      if(!p1s.length||!p2s.length) continue;
+      const p2after=p2s.find(p=>p.date>=p1s[0].date); if(!p2after) continue;
+      const days=Math.round((new Date(p2after.date+"T12:00:00Z")-new Date(p1s[0].date+"T12:00:00Z"))/(86400000));
+      diffs.push(days);
+    }
+    if(!diffs.length) return null;
+    const avg=Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length);
+    return{count:diffs.length,avg,
+      sameDay:diffs.filter(d=>d===0).length,
+      within30:diffs.filter(d=>d>0&&d<=30).length,
+      after30:diffs.filter(d=>d>30).length};
+  }
+
+  // ── Jornadas ──────────────────────────────────────────────────────────────
+  function calcJornadas(filter,sortBy){
+    const jmap=new Map();
+    for(const [,b] of ana_buyers){
+      const paid=b.products.filter(p=>p.status==="Paga");
+      const mp=paid.filter(p=>p.id==="manual").sort((a,z)=>a.date.localeCompare(z.date))[0]; if(!mp) continue;
+      const after=paid.filter(p=>p.date>=mp.date);
+      const seen=new Set(); const ids=[];
+      for(const step of FUNIL_STEPS){ if(after.find(p=>p.id===step.id)&&!seen.has(step.id)){seen.add(step.id);ids.push(step.id);} }
+      const key=ids.join("+");
+      if(!jmap.has(key)) jmap.set(key,{ids,count:0});
+      jmap.get(key).count++;
+    }
+    let arr=Array.from(jmap.values());
+    if(filter==="with_curso") arr=arr.filter(j=>j.ids.includes("curso"));
+    else if(filter==="both_obs") arr=arr.filter(j=>j.ids.includes("checklist")&&j.ids.includes("planFin"));
+    else if(filter==="all_products") arr=arr.filter(j=>FUNIL_STEPS.every(s=>j.ids.includes(s.id)));
+    else if(filter==="manual_only") arr=arr.filter(j=>j.ids.length===1&&j.ids[0]==="manual");
+    arr.sort((a,b)=>b.count-a.count);
+    return arr.slice(0,8);
+  }
+
+  // ── Status de compra ──────────────────────────────────────────────────────
+  function calcStatus(statusFilter,groupBy){
+    const filtered=statusFilter==="all"?rows:rows.filter(r=>(r["Status da compra"]||"").trim()===statusFilter);
+    const data={};const totals={};
+    for(const r of filtered){
+      const id=classifyProduct(r["Nome do produto"]);if(!id)continue;
+      const st=(r["Status da compra"]||"").trim();
+      const key=groupBy==="status"?st:groupBy==="mes"?(toISO(r["Data da compra"]||r["Data"])||"").slice(0,7):id;
+      if(!data[key])data[key]={};
+      data[key][st]=(data[key][st]||0)+1;
+      totals[st]=(totals[st]||0)+1;
+    }
+    return{data,totals};
+  }
+
+  function prodLabel(id){return FUNIL_STEPS.find(s=>s.id===id)?.label||id;}
+  function jornadaLabel(ids){
+    if(ids.length===1&&ids[0]==="manual") return "Manual apenas";
+    return ids.map(id=>FUNIL_STEPS.find(s=>s.id===id)?.label||id).join(" → ");
+  }
+
+  // Expõe funções para os botões
+  window.setAnaTab=t=>{S.aTab=t;renderFunil();};
+  window.applyAnaQuick=k=>{
+    S.anaActiveQuick=k;const t=todayISO();
+    if(k==="all"){S.anaStartDate="";S.anaEndDate="";}
+    else if(k==="hoje"){S.anaStartDate=t;S.anaEndDate=t;}
+    else if(k==="ontem"){const y=yesterdayISO();S.anaStartDate=y;S.anaEndDate=y;}
+    else if(k==="7d"){S.anaStartDate=nDaysAgoISO(6);S.anaEndDate=t;}
+    else if(k==="30d"){S.anaStartDate=nDaysAgoISO(29);S.anaEndDate=t;}
+    else if(k==="mes"){S.anaStartDate=firstOfMonthISO();S.anaEndDate=t;}
+    renderFunil();
+  };
+  window.onAnaDC=(w,v)=>{if(w==="s")S.anaStartDate=v;else S.anaEndDate=v;S.anaActiveQuick="";renderFunil();};
+  window.runTempo=()=>{S.anaTempoProd1=document.getElementById("ana-p1")?.value||"manual";S.anaTempoProd2=document.getElementById("ana-p2")?.value||"curso";renderFunil();};
+  window.runJornada=()=>{S.anaJornadaFiltro=document.getElementById("ana-jf")?.value||"all";S.anaJornadaSort=document.getElementById("ana-js")?.value||"freq";renderFunil();};
+  window.runStatus=()=>{S.anaStatusFiltro=document.getElementById("ana-sf")?.value||"all";S.anaStatusGroup=document.getElementById("ana-sg")?.value||"produto";renderFunil();};
+
+  // Calcula
+  const tempoR=calcTempo(S.anaTempoProd1,S.anaTempoProd2);
+  const jornadaR=calcJornadas(S.anaJornadaFiltro,S.anaJornadaSort);
+  const {data:stData,totals:stTotals}=calcStatus(S.anaStatusFiltro,S.anaStatusGroup);
+  const maxJ=jornadaR.length?jornadaR[0].count:1;
+  const stKeys=Object.keys(stData).sort();
+  const stCols=ALL_STATUS.filter(s=>S.funilRows.some(r=>(r["Status da compra"]||"").trim()===s));
+
+  const QS2=[{k:"all",l:"Todos"},{k:"hoje",l:"Hoje"},{k:"ontem",l:"Ontem"},{k:"7d",l:"7 dias"},{k:"30d",l:"30 dias"},{k:"mes",l:"Este mês"}];
+  const TABS=[{k:"tempo",l:"⏱ Tempo entre compras"},{k:"jornada",l:"🛒 Jornadas de compra"},{k:"status",l:"📋 Status de compra"}];
+
+  const sel=`style="background:var(--card);border:0.5px solid var(--border-h);border-radius:7px;padding:6px 10px;font-size:12px;color:var(--text);min-width:180px"`;
+  const btnRun=`style="background:var(--text);color:var(--bg);border:none;padding:7px 18px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer"`;
+  const filterBox=`style="background:var(--bg);border:0.5px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap"`;
+
+  // Conteúdo aba Tempo
+  const tempoHTML=`
+    <div ${filterBox}>
+      <div><div class="kc-lbl" style="margin-bottom:4px">Produto de referência</div>
+        <select id="ana-p1" ${sel}>${prods.map(p=>`<option value="${p.id}"${p.id===S.anaTempoProd1?" selected":""}>${p.label}</option>`).join("")}</select></div>
+      <div><div class="kc-lbl" style="margin-bottom:4px">Produto alvo</div>
+        <select id="ana-p2" ${sel}>${prods.map(p=>`<option value="${p.id}"${p.id===S.anaTempoProd2?" selected":""}>${p.label}</option>`).join("")}</select></div>
+      <button onclick="runTempo()" ${btnRun}>Analisar</button>
+    </div>
+    ${tempoR?`<div class="cc">
+      <div class="ch"><span class="ct">${prodLabel(S.anaTempoProd1)} → ${prodLabel(S.anaTempoProd2)}</span><span class="kc-sub">${tempoR.count} compradores dos dois</span></div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+        <div class="kc"><div class="kc-lbl">Dias (média)</div><div class="kc-val" style="font-size:28px;color:var(--text)">${tempoR.avg}</div></div>
+        <div class="kc"><div class="kc-lbl">Mesmo dia</div><div class="kc-val" style="font-size:22px;color:#1a7a4a">${((tempoR.sameDay/tempoR.count)*100).toFixed(0)}%</div><div class="kc-sub">${tempoR.sameDay} pessoas</div></div>
+        <div class="kc"><div class="kc-lbl">Até 30 dias</div><div class="kc-val" style="font-size:22px">${((tempoR.within30/tempoR.count)*100).toFixed(0)}%</div><div class="kc-sub">${tempoR.within30} pessoas</div></div>
+        <div class="kc"><div class="kc-lbl">Após 30 dias</div><div class="kc-val" style="font-size:22px;color:var(--muted)">${((tempoR.after30/tempoR.count)*100).toFixed(0)}%</div><div class="kc-sub">${tempoR.after30} pessoas</div></div>
+      </div></div>`:`<div class="cc"><p style="color:var(--hint);font-size:13px;padding:8px 0">Nenhum comprador encontrou os dois produtos no período.</p></div>`}`;
+
+  // Conteúdo aba Jornadas
+  const jornadaHTML=`
+    <div ${filterBox}>
+      <div><div class="kc-lbl" style="margin-bottom:4px">Filtrar jornadas</div>
+        <select id="ana-jf" ${sel}>
+          <option value="all"${S.anaJornadaFiltro==="all"?" selected":""}>Qualquer combinação</option>
+          <option value="with_curso"${S.anaJornadaFiltro==="with_curso"?" selected":""}>Incluem o Curso</option>
+          <option value="both_obs"${S.anaJornadaFiltro==="both_obs"?" selected":""}>Ambos os Order Bumps</option>
+          <option value="all_products"${S.anaJornadaFiltro==="all_products"?" selected":""}>Todos os produtos</option>
+          <option value="manual_only"${S.anaJornadaFiltro==="manual_only"?" selected":""}>Manual apenas</option>
+        </select></div>
+      <div><div class="kc-lbl" style="margin-bottom:4px">Ordenar por</div>
+        <select id="ana-js" ${sel}><option value="freq" selected>Mais frequente</option></select></div>
+      <button onclick="runJornada()" ${btnRun}>Analisar</button>
+    </div>
+    <div class="cc">
+      <div class="ch"><span class="ct">Combinações mais comuns</span><span class="kc-sub">${totalBuyers} compradores do Manual</span></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${jornadaR.map(j=>{
+          const pct=(j.count/totalBuyers*100).toFixed(1);
+          const w=Math.round(j.count/maxJ*100);
+          return `<div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:11px;color:var(--muted);width:260px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${jornadaLabel(j.ids)}</span>
+            <div style="flex:1;height:22px;background:var(--bg);border-radius:3px;overflow:hidden;position:relative;border:0.5px solid var(--border)">
+              <div style="height:100%;width:${w}%;background:#2d7d9a;opacity:.7;border-radius:3px"></div>
+              <span style="position:absolute;right:7px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:500;color:var(--text)">${pct}%</span>
+            </div>
+            <span style="font-size:11px;color:var(--muted);width:72px;text-align:right;flex-shrink:0">${j.count} pessoas</span>
+          </div>`;
+        }).join("")}
+      </div>
+    </div>`;
+
+  // Conteúdo aba Status
+  const statusHTML=`
+    <div ${filterBox}>
+      <div><div class="kc-lbl" style="margin-bottom:4px">Status</div>
+        <select id="ana-sf" ${sel}>
+          <option value="all"${S.anaStatusFiltro==="all"?" selected":""}>Todos os status</option>
+          ${stCols.map(s=>`<option value="${s}"${S.anaStatusFiltro===s?" selected":""}>${s}</option>`).join("")}
+        </select></div>
+      <div><div class="kc-lbl" style="margin-bottom:4px">Agrupar por</div>
+        <select id="ana-sg" ${sel}>
+          <option value="produto"${S.anaStatusGroup==="produto"?" selected":""}>Produto</option>
+          <option value="mes"${S.anaStatusGroup==="mes"?" selected":""}>Mês</option>
+          <option value="status"${S.anaStatusGroup==="status"?" selected":""}>Status</option>
+        </select></div>
+      <button onclick="runStatus()" ${btnRun}>Analisar</button>
+    </div>
+    <div style="background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="background:var(--bg);border-bottom:1px solid var(--border)">
+          <th style="padding:9px 12px;text-align:left;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);border-right:1px solid var(--border)">${S.anaStatusGroup==="mes"?"Mês":S.anaStatusGroup==="status"?"Status":"Produto"}</th>
+          ${stCols.map(s=>`<th style="padding:9px 12px;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);border-right:1px solid var(--border);white-space:nowrap">${s}</th>`).join("")}
+          <th style="padding:9px 12px;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">Total</th>
+        </tr></thead>
+        <tbody>
+          ${stKeys.map((key,i)=>{
+            const row=stData[key]||{};
+            const tot=stCols.reduce((a,s)=>a+(row[s]||0),0);
+            const lbl=S.anaStatusGroup==="produto"?(FUNIL_STEPS.find(s=>s.id===key)?.label||key):key;
+            return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?"var(--card)":"var(--bg)"}">
+              <td style="padding:9px 12px;font-weight:500;border-right:1px solid var(--border)">${lbl}</td>
+              ${stCols.map(s=>`<td style="padding:9px 12px;text-align:center;border-right:1px solid var(--border);color:${s==="Paga"?"#1a7a4a":["Reembolsado","Aguardando reembolso"].includes(s)?"#b91c1c":s==="Em recuperacao"?"#c07800":"var(--text)"}">${row[s]||0}</td>`).join("")}
+              <td style="padding:9px 12px;text-align:center;font-weight:500">${tot}</td>
+            </tr>`;
+          }).join("")}
+          <tr style="border-top:2px solid var(--border-h);background:var(--bg)">
+            <td style="padding:9px 12px;font-weight:700;border-right:1px solid var(--border)">Total</td>
+            ${stCols.map(s=>`<td style="padding:9px 12px;text-align:center;font-weight:600;border-right:1px solid var(--border)">${stTotals[s]||0}</td>`).join("")}
+            <td style="padding:9px 12px;text-align:center;font-weight:700">${stCols.reduce((a,s)=>a+(stTotals[s]||0),0)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+
+  const tabContent={tempo:tempoHTML,jornada:jornadaHTML,status:statusHTML};
+
+  return `
+    <div class="period-wrap">
+      <div class="period-top">
+        <span class="period-lbl">Período</span>
+        <div class="drbox"><span class="drbox-icon">📅</span>
+          <input type="date" value="${S.anaStartDate}" onchange="onAnaDC('s',this.value)"/>
+          <span class="drbox-sep">—</span>
+          <input type="date" value="${S.anaEndDate}" onchange="onAnaDC('e',this.value)"/>
+        </div>
+      </div>
+      <div class="period-quick">${QS2.map(q=>`<button class="btn-q${(S.anaActiveQuick||"all")===q.k?" on":""}" onclick="applyAnaQuick('${q.k}')">${q.l}</button>`).join("")}</div>
+    </div>
+    <div style="display:flex;gap:0;margin-bottom:18px;border-bottom:1px solid var(--border)">
+      ${TABS.map(t=>`<button onclick="setAnaTab('${t.k}')" style="padding:9px 18px;font-size:12px;font-weight:500;background:transparent;border:none;border-bottom:2px solid ${S.aTab===t.k?"var(--text)":"transparent"};color:${S.aTab===t.k?"var(--text)":"var(--muted)"};cursor:pointer;margin-bottom:-1px;white-space:nowrap">${t.l}</button>`).join("")}
+    </div>
+    ${tabContent[S.aTab]||""}`;
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
