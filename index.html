@@ -997,12 +997,18 @@ function renderAnuncios(){
 function classifyProduct(name){
   if(!name) return null;
   const n=name.toUpperCase();
-  if(n.includes("MAPA DA CASA") || n.includes("RAIOX")) return null;
+  // Ignora produtos de outros funis
+  const IGNORAR=["MAPA DA CASA","RAIO-X","RAIOX","GUIA DEFINITIVO","REDUZIR","IMPOSTO",
+    "APROVAÇÃO DO PROJETO","APROVACAO DO PROJETO","10 ERROS","GRÁTIS","GRATIS",
+    "CUSTO POR M2","REPROVADO","PILARES","ZERO ENTRADA","CASA PRÓPRIA","CASA PROPRIA",
+    "DESCUBRA O CUSTO","DOIS CHECKLISTS","QUAL O LUCRO","OS 8 PILARES",
+    "MÉTODO ALAVANCA","METODO ALAVANCA","EBOOK - DESCUBRA"];
+  if(IGNORAR.some(x=>n.includes(x))) return null;
   if(n.includes("MANUAL DEFINITIVO")) return "manual";
   if(n.includes("CHECKLIST")) return "checklist";
-  if(n.includes("FINANCIAMENTO") && !n.includes("GUIA") && !n.includes("PASSO") && !n.includes("CAIXA")) return "planFin";
+  if((n.includes("FINANCIAMENTO") || n.includes("CUSTOS DO FINANCIAMENTO")) && !n.includes("CAIXA")) return "planFin";
   if(n.includes("LUCRO")) return "planLucro";
-  if(n.includes("CAIXA") || n.includes("GUIA DEFINITIVO") || n.includes("PASSO A PASSO")) return "curso";
+  if(n.includes("CURSO COMPLETO") || n.includes("PASSO A PASSO")) return "curso";
   return null;
 }
 
@@ -1206,12 +1212,12 @@ function renderFunil(){
   const lucroC=lucro>=0?"#1a7a4a":"#b91c1c";
 
   // Status perdas
-  const qtdReemb=(statusCounts["Reembolsado"]||0)+(statusCounts["Aguardando reembolso"]||0);
-  const valReemb=(statusVals["Reembolsado"]||0)+(statusVals["Aguardando reembolso"]||0);
-  const qtdRec  =statusCounts["Em recuperacao"]||0;
-  const valRec  =statusVals["Em recuperacao"]||0;
-  const qtdAbrt =(statusCounts["Aberto"]||0)+(statusCounts["Aguardando pagamento"]||0);
-  const valAbrt =(statusVals["Aberto"]||0)+(statusVals["Aguardando pagamento"]||0);
+  const qtdReemb=(statusCounts["Reembolsado"]||0)+(statusCounts["Aguardando Reembolso"]||0);
+  const valReemb=(statusVals["Reembolsado"]||0)+(statusVals["Aguardando Reembolso"]||0);
+  const qtdRec  =statusCounts["Em Recuperacao"]||0;
+  const valRec  =statusVals["Em Recuperacao"]||0;
+  const qtdAbrt =(statusCounts["Aberta"]||0)+(statusCounts["Aguardando Pagamento"]||0);
+  const valAbrt =(statusVals["Aberta"]||0)+(statusVals["Aguardando Pagamento"]||0);
   const pctReemb=totalFat>0?(valReemb/totalFat)*100:0;
   const pctRec  =totalFat>0?(valRec/totalFat)*100:0;
   const pctAbrt =totalFat>0?(valAbrt/totalFat)*100:0;
@@ -1343,7 +1349,7 @@ function renderFunil(){
             </div>
             <div style="flex:1;background:#f3f1ed;border-radius:5px;padding:5px 7px">
               <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Ag. reembolso</div>
-              <div style="font-size:13px;font-weight:500;color:#c07800">${statusCounts["Aguardando reembolso"]||0}</div>
+              <div style="font-size:13px;font-weight:500;color:#c07800">${statusCounts["Aguardando Reembolso"]||0}</div>
             </div>
           </div>
         </div>
@@ -1365,11 +1371,11 @@ function renderFunil(){
           <div style="margin-top:8px;display:flex;gap:6px">
             <div style="flex:1;background:#f3f1ed;border-radius:5px;padding:5px 7px">
               <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Aberto</div>
-              <div style="font-size:13px;font-weight:500">${statusCounts["Aberto"]||0}</div>
+              <div style="font-size:13px;font-weight:500">${statusCounts["Aberta"]||0}</div>
             </div>
             <div style="flex:1;background:#f3f1ed;border-radius:5px;padding:5px 7px">
               <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Ag. pagamento</div>
-              <div style="font-size:13px;font-weight:500">${statusCounts["Aguardando pagamento"]||0}</div>
+              <div style="font-size:13px;font-weight:500">${statusCounts["Aguardando Pagamento"]||0}</div>
             </div>
           </div>
         </div>
@@ -1385,7 +1391,7 @@ function renderFunil(){
 
 // ── buildAnaContent — Análise exploratória dentro do Funil ─────────────────
 function buildAnaContent(fd, buyers){
-  const ALL_STATUS=["Paga","Aberto","Aguardando pagamento","Em recuperacao","Reembolsado","Aguardando reembolso"];
+  const ALL_STATUS=["Paga","Aberta","Aguardando Pagamento","Em Recuperacao","Reembolsado","Aguardando Reembolso"];
 
   // Produtos disponíveis detectados automaticamente
   const prodsFound=new Set();
@@ -1601,7 +1607,7 @@ function buildAnaContent(fd, buyers){
             const lbl=S.anaStatusGroup==="produto"?(FUNIL_STEPS.find(s=>s.id===key)?.label||key):key;
             return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?"var(--card)":"var(--bg)"}">
               <td style="padding:9px 12px;font-weight:500;border-right:1px solid var(--border)">${lbl}</td>
-              ${stCols.map(s=>`<td style="padding:9px 12px;text-align:center;border-right:1px solid var(--border);color:${s==="Paga"?"#1a7a4a":["Reembolsado","Aguardando reembolso"].includes(s)?"#b91c1c":s==="Em recuperacao"?"#c07800":"var(--text)"}">${row[s]||0}</td>`).join("")}
+              ${stCols.map(s=>`<td style="padding:9px 12px;text-align:center;border-right:1px solid var(--border);color:${s==="Paga"?"#1a7a4a":["Reembolsado","Aguardando Reembolso"].includes(s)?"#b91c1c":s==="Em Recuperacao"?"#c07800":"var(--text)"}">${row[s]||0}</td>`).join("")}
               <td style="padding:9px 12px;text-align:center;font-weight:500">${tot}</td>
             </tr>`;
           }).join("")}
