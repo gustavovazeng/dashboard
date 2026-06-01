@@ -252,6 +252,11 @@ async function loadData(){
   if(IS_FILE){ S.firstLoad=false;render();return; }
   S.loading=true;S.error=null;
   if(!S.firstLoad) render();
+  // Timeout de segurança: se demorar >25s libera a tela
+  const _t=setTimeout(()=>{
+    if(S.firstLoad){S.firstLoad=false;S.loading=false;
+      S.error="Tempo esgotado. Verifique a conexão e tente atualizar.";render();}
+  },25000);
   try {
     const [mr,vr,fr]=await Promise.all([fetch(URL_META),fetch(URL_VENDAS),fetch(URL_FUNIL)]);
     if(!mr.ok)throw new Error(`HTTP ${mr.status} ao carregar Meta`);
@@ -335,11 +340,18 @@ async function loadData(){
 
     // ── Funil — Base Vendas Completo ──────────────────────────────────────
     S.funilRows = parseSheet(fj);
-    S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate);
+    try{ S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
+    catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
 
     S.updated=new Date(Date.now()-3*60*60*1000).toLocaleTimeString("pt-BR");
     S.firstLoad=false;
-  } catch(e){ S.error=e.message;S.firstLoad=false; }
+    clearTimeout(_t);
+  } catch(e){
+    clearTimeout(_t);
+    S.error="Erro ao carregar: "+e.message;
+    S.firstLoad=false;
+    console.error("loadData error:",e);
+  }
   S.loading=false;
   render();
 }
@@ -1165,6 +1177,43 @@ function buildFunilData(rows, start, end){
   };
 }
 
+// ── Funil barras helper ────────────────────────────────────────────────────
+function funilBarras(counts,fat,pct){
+  const steps=[
+    {id:"manual",    label:"Manual Definitivo",    step:"Entrada",     color:"#185FA5"},
+    {id:"checklist", label:"Checklist",            step:"Order Bump 1",color:"#3B6D11"},
+    {id:"planFin",   label:"Plan. Financiamento",  step:"Order Bump 2",color:"#0F6E56"},
+    {id:"planLucro", label:"Planilha Lucro",       step:"Upsell",      color:"#854F0B"},
+    {id:"curso",     label:"Curso",                step:"Ascensão",    color:"#993C1D"},
+  ];
+  return steps.map(function(s){
+    var p=pct(s.id);
+    var barW=Math.max(p,0.5);
+    var innerLabel=barW>8
+      ? '<span style="font-size:11px;font-weight:500;color:#fff;white-space:nowrap">'+p.toFixed(1)+'%</span>'
+      : '';
+    var outerLabel=barW<=8
+      ? '<span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:600;color:'+s.color+'">'+p.toFixed(1)+'%</span>'
+      : '';
+    return '<div style="display:flex;align-items:center;gap:12px">'
+      +'<div style="width:160px;flex-shrink:0">'
+        +'<div style="font-size:11px;font-weight:600;color:var(--text)">'+s.label+'</div>'
+        +'<div style="font-size:9px;color:var(--hint);margin-top:1px">'+s.step+'</div>'
+      +'</div>'
+      +'<div style="flex:1;height:30px;background:var(--bg);border-radius:5px;overflow:hidden;position:relative;border:0.5px solid var(--border)">'
+        +'<div style="height:100%;width:'+barW+'%;background:'+s.color+';border-radius:5px;display:flex;align-items:center;padding-left:8px;min-width:2px">'
+          +innerLabel
+        +'</div>'
+        +outerLabel
+      +'</div>'
+      +'<div style="width:90px;flex-shrink:0;text-align:right">'
+        +'<div style="font-size:13px;font-weight:500;color:var(--text)">'+(counts[s.id]||0).toLocaleString("pt-BR")+'</div>'
+        +'<div style="font-size:10px;color:var(--hint)">'+fBRLShort(fat[s.id]||0)+'</div>'
+      +'</div>'
+    +'</div>';
+  }).join("");
+}
+
 // ── Render Funil ────────────────────────────────────────────────────────────
 function renderFunil(){
   const el=document.getElementById("page-funil");if(!el)return;
@@ -1269,32 +1318,7 @@ function renderFunil(){
       <div class="cc" style="padding:16px">
         <div class="section-lbl" style="margin-top:0;margin-bottom:16px">Funil de conversão</div>
         <div style="display:flex;flex-direction:column;gap:10px">
-          ${[
-            {id:"manual",    label:"Manual Definitivo",      step:"Entrada",    color:"#185FA5"},
-            {id:"checklist", label:"Checklist",              step:"Order Bump 1",color:"#3B6D11"},
-            {id:"planFin",   label:"Plan. Financiamento",    step:"Order Bump 2",color:"#0F6E56"},
-            {id:"planLucro", label:"Planilha Lucro",         step:"Upsell",      color:"#854F0B"},
-            {id:"curso",     label:"Curso",                  step:"Ascensão",    color:"#993C1D"},
-          ].map(s=>{
-            const p=pct(s.id);
-            const barW=Math.max(p,0.5);
-            return \`<div style="display:flex;align-items:center;gap:12px">
-              <div style="width:160px;flex-shrink:0">
-                <div style="font-size:11px;font-weight:600;color:var(--text)">\${s.label}</div>
-                <div style="font-size:9px;color:var(--hint);margin-top:1px">\${s.step}</div>
-              </div>
-              <div style="flex:1;height:30px;background:var(--bg);border-radius:5px;overflow:hidden;position:relative;border:0.5px solid var(--border)">
-                <div style="height:100%;width:\${barW}%;background:\${s.color};border-radius:5px;display:flex;align-items:center;padding-left:8px;min-width:2px">
-                  \${barW>8?\`<span style="font-size:11px;font-weight:500;color:#fff;white-space:nowrap">\${p.toFixed(1)}%</span>\`:""}
-                </div>
-                \${barW<=8?\`<span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:600;color:\${s.color}">\${p.toFixed(1)}%</span>\`:""}
-              </div>
-              <div style="width:90px;flex-shrink:0;text-align:right">
-                <div style="font-size:13px;font-weight:500;color:var(--text)">\${(counts[s.id]||0).toLocaleString("pt-BR")}</div>
-                <div style="font-size:10px;color:var(--hint)">\${fBRLShort(fat[s.id]||0)}</div>
-              </div>
-            </div>\`;
-          }).join("")}
+          ${funilBarras(counts,fat,pct)}
         </div>
       </div>
 
