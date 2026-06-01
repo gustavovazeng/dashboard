@@ -186,12 +186,6 @@ const S = {
   fStartDate:"",   // funil: sem filtro de data por default (all time)
   fEndDate:"",
   fActiveQuick:"all",
-  // Análise exploratória
-  aTab:"tempo",
-  anaStartDate:"", anaEndDate:"", anaActiveQuick:"all",
-  anaTempoProd1:"manual", anaTempoProd2:"curso",
-  anaJornadaFiltro:"all", anaJornadaSort:"freq",
-  anaStatusFiltro:"all", anaStatusGroup:"produto",
   // Overlay toggles por gráfico: {cpc:{inv:false,cpv:false}, ...}
   overlays:{cpc:{inv:false,cpv:false},ctr:{inv:false,cpv:false},cpm:{inv:false,cpv:false},
     txPagChk:{inv:false,cpv:false},txChkVnd:{inv:false,cpv:false},connect:{inv:false,cpv:false}},
@@ -655,7 +649,7 @@ function renderPrincipal(){
   const ticketC=statusColor(tot.ticket,META_TICKET,true);
   const lucroC=tot.lucro>=0?"#1a7a4a":"#b91c1c";
 
-  return `
+  el.innerHTML=`
     <div class="hdr">
       <div>
         <div class="hdr-title">Manual Definitivo para Construção e Venda de Casas Financiadas</div>
@@ -1131,7 +1125,7 @@ function buildFunilData(rows, start, end){
   }
 
   return {
-    counts, fat, manualCount, totalFat, totalSpend, buyers,
+    counts, fat, manualCount, totalFat, totalSpend,
     roas: totalSpend>0 ? totalFat/totalSpend : 0,
     ltv:  totalFat/manualCount,
     lucro: totalFat - totalTaxa - (totalSpend*TAXA_IMPOSTO),
@@ -1253,12 +1247,12 @@ function renderFunil(){
     </div>
 
     <!-- Funil + Perdas lado a lado -->
-    <div style="display:grid;grid-template-columns:1fr 280px;gap:14px;margin-bottom:20px;align-items:start">
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:14px;margin-bottom:20px;align-items:start">
 
       <!-- Funil SVG -->
       <div class="cc" style="padding:16px">
         <div class="section-lbl" style="margin-top:0;margin-bottom:12px">Funil de conversão</div>
-        <svg viewBox="0 0 520 420" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:420px;display:block;margin:0 auto" role="img" aria-label="Funil de vendas">
+        <svg viewBox="0 0 520 420" xmlns="http://www.w3.org/2000/svg" width="100%" role="img" aria-label="Funil de vendas">
           <defs>
             <marker id="arf" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
               <path d="M0,1 L6,3.5 L0,6 Z" fill="#a0917e" opacity="0.6"/>
@@ -1377,354 +1371,7 @@ function renderFunil(){
       </div>
     </div>
 
-    <hr style="border:none;border-top:1px solid var(--border);margin:24px 0"/>
-
-    <div class="section-lbl">Análise exploratória</div>
-
-    <!-- Abas de análise -->
-    <div style="display:flex;gap:0;margin-bottom:18px;border-bottom:1px solid var(--border)">
-      ${[{k:"tempo",l:"⏱ Tempo entre compras"},{k:"jornada",l:"🛒 Jornadas de compra"},{k:"status",l:"📋 Status de compra"}].map(t=>`<button onclick="setAnaTab('${t.k}')" style="padding:9px 18px;font-size:12px;font-weight:500;background:transparent;border:none;border-bottom:2px solid ${S.aTab===t.k?"var(--text)":"transparent"};color:${S.aTab===t.k?"var(--text)":"var(--muted)"};cursor:pointer;margin-bottom:-1px;white-space:nowrap">${t.l}</button>`).join("")}
-    </div>
-
-    ${buildAnaContent(fd)}
-
-    <p class="foot">Base Vendas - Completo (Eduzz) + Base Meta (Stract) · Google Sheets API v4</p>\`;
-}
-
-
-// ── Análise Exploratória (chamada dentro de renderFunil) ─────────────────────
-function buildAnaContent(fd){
-  // Produtos disponíveis — detectados automaticamente da base
-  function getAvailableProducts(){
-    const found=new Set();
-    for(const r of S.funilRows){
-      const id=classifyProduct(r["Nome do produto"]);
-      if(id) found.add(id);
-    }
-    return FUNIL_STEPS.filter(s=>found.has(s.id));
-  }
-  const prods=getAvailableProducts();
-
-  // Filtra rows por período
-  function filterRows(start,end){
-    return S.funilRows.filter(r=>{
-      const d=toISO(r["Data da compra"]||r["Data"]);
-      if(!d) return false;
-      if(start && d<start) return false;
-      if(end   && d>end)   return false;
-      return true;
-    });
-  }
-
-  const start=S.anaStartDate||"";
-  const end  =S.anaEndDate||"";
-  const rows =start||end ? filterRows(start,end) : S.funilRows;
-
-  // ── Helpers ──────────────────────────────────────────────────────────────
-  // Agrupa compradores por identidade (e-mail+CPF+tel)
-  function buildBuyers(rowList){
-    const buyers=new Map();
-    function getOrCreate(r){
-      const keys=[
-        (r["Email"]||"").toLowerCase().trim(),
-        (r["CPF Comprador"]||"").replace(/\D/g,""),
-        (r["Telefone"]||"").replace(/\D/g,""),
-      ].filter(Boolean);
-      for(const [,b] of buyers){
-        for(const k of keys){ if(k&&b.keys.has(k)){ keys.forEach(k2=>{if(k2)b.keys.add(k2);}); return b; } }
-      }
-      const b={keys:new Set(keys),products:[]};
-      buyers.set(keys[0]||Math.random().toString(),b);
-      return b;
-    }
-    for(const r of rowList){
-      const id=classifyProduct(r["Nome do produto"]);if(!id)continue;
-      const b=getOrCreate(r);
-      const d=toISO(r["Data da compra"]||r["Data"])||"";
-      const st=(r["Status da compra"]||"").trim();
-      b.products.push({id,date:d,status:st});
-    }
-    return buyers;
-  }
-
-  // ── TEMPO ENTRE COMPRAS ───────────────────────────────────────────────────
-  function calcTempo(prod1,prod2,buyers){
-    const diffs=[];
-    for(const [,b] of buyers){
-      const paid=b.products.filter(p=>p.status==="Paga");
-      const p1s=paid.filter(p=>p.id===prod1).sort((a,b)=>a.date.localeCompare(b.date));
-      const p2s=paid.filter(p=>p.id===prod2).sort((a,b)=>a.date.localeCompare(b.date));
-      if(!p1s.length||!p2s.length) continue;
-      const d1=new Date(p1s[0].date+"T12:00:00Z");
-      // primeiro p2 >= p1
-      const p2=p2s.find(p=>p.date>=p1s[0].date);
-      if(!p2) continue;
-      const d2=new Date(p2.date+"T12:00:00Z");
-      const days=Math.round((d2-d1)/(1000*60*60*24));
-      diffs.push(days);
-    }
-    if(!diffs.length) return null;
-    const avg=Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length);
-    const sameDay=diffs.filter(d=>d===0).length;
-    const within30=diffs.filter(d=>d>0&&d<=30).length;
-    const after30=diffs.filter(d=>d>30).length;
-    return{count:diffs.length,avg,sameDay,within30,after30};
-  }
-
-  // ── JORNADAS ──────────────────────────────────────────────────────────────
-  function calcJornadas(filter,sortBy,buyers){
-    const journeys=new Map();
-    for(const [,b] of buyers){
-      const paid=b.products.filter(p=>p.status==="Paga");
-      const mp=paid.filter(p=>p.id==="manual").sort((a,z)=>a.date.localeCompare(z.date))[0];
-      if(!mp) continue;
-      const after=paid.filter(p=>p.date>=mp.date);
-      const seen=new Set();
-      const ids=[];
-      // ordem do funil
-      for(const step of FUNIL_STEPS){
-        if(after.find(p=>p.id===step.id&&!seen.has(step.id))){
-          seen.add(step.id);ids.push(step.id);
-        }
-      }
-      const key=ids.join("+");
-      if(!journeys.has(key)) journeys.set(key,{ids,count:0});
-      journeys.get(key).count++;
-    }
-    let arr=Array.from(journeys.values());
-    // filtrar
-    if(filter==="with_curso") arr=arr.filter(j=>j.ids.includes("curso"));
-    else if(filter==="both_obs") arr=arr.filter(j=>j.ids.includes("checklist")&&j.ids.includes("planFin"));
-    else if(filter==="all_products") arr=arr.filter(j=>FUNIL_STEPS.every(s=>j.ids.includes(s.id)));
-    else if(filter==="manual_only") arr=arr.filter(j=>j.ids.length===1&&j.ids[0]==="manual");
-    // sort
-    if(sortBy==="freq") arr.sort((a,b)=>b.count-a.count);
-    return arr.slice(0,8);
-  }
-
-  // ── STATUS DE COMPRA ──────────────────────────────────────────────────────
-  const ALL_STATUS=["Paga","Aberto","Aguardando pagamento","Em recuperacao","Reembolsado","Aguardando reembolso"];
-  function calcStatus(statusFilter,groupBy){
-    const filtered=statusFilter==="all" ? rows : rows.filter(r=>(r["Status da compra"]||"").trim()===statusFilter);
-    const data={};
-    const totals={};
-    for(const r of filtered){
-      const id=classifyProduct(r["Nome do produto"]);if(!id)continue;
-      const st=(r["Status da compra"]||"").trim();
-      const key=groupBy==="status"?st:groupBy==="mes"?(toISO(r["Data da compra"]||r["Data"])||"").slice(0,7):id;
-      if(!data[key]) data[key]={};
-      if(!data[key][st]) data[key][st]=0;
-      data[key][st]++;
-      totals[st]=(totals[st]||0)+1;
-    }
-    return{data,totals};
-  }
-
-  // ── Calcula resultados ────────────────────────────────────────────────────
-  const buyers=fd.buyers||buildBuyers(rows);
-  const tempoResult=calcTempo(S.anaTempoProd1,S.anaTempoProd2,buyers);
-  const jornadaResult=calcJornadas(S.anaJornadaFiltro,S.anaJornadaSort,buyers);
-  const statusResult=calcStatus(S.anaStatusFiltro,S.anaStatusGroup);
-
-  const maxJornada=jornadaResult.length?jornadaResult[0].count:1;
-  const totalBuyers=buyers.size;
-
-  function prodLabel(id){ return FUNIL_STEPS.find(s=>s.id===id)?.label||id; }
-  function jornadaLabel(ids){
-    if(ids.length===1&&ids[0]==="manual") return "Manual apenas";
-    return ids.map(id=>FUNIL_STEPS.find(s=>s.id===id)?.label||id).join(" → ");
-  }
-
-  // ── Period controls para esta aba ─────────────────────────────────────────
-  function applyAnaQuick(k){
-    S.anaActiveQuick=k;const t=todayISO();
-    if(k==="all"){S.anaStartDate="";S.anaEndDate="";}
-    else if(k==="hoje"){S.anaStartDate=t;S.anaEndDate=t;}
-    else if(k==="ontem"){const y=yesterdayISO();S.anaStartDate=y;S.anaEndDate=y;}
-    else if(k==="7d"){S.anaStartDate=nDaysAgoISO(6);S.anaEndDate=t;}
-    else if(k==="30d"){S.anaStartDate=nDaysAgoISO(29);S.anaEndDate=t;}
-    else if(k==="mes"){S.anaStartDate=firstOfMonthISO();S.anaEndDate=t;}
-    renderFunil();
-  }
-  function onAnaDC(w,v){ if(w==="s")S.anaStartDate=v;else S.anaEndDate=v;S.anaActiveQuick="";renderFunil(); }
-  window.applyAnaQuick=applyAnaQuick;
-  window.onAnaDC=onAnaDC;
-  window.setAnaTab=function(t){ S.aTab=t; renderFunil(); };
-  window.runTempo=function(){
-    S.anaTempoProd1=document.getElementById("ana-p1")?.value||"manual";
-    S.anaTempoProd2=document.getElementById("ana-p2")?.value||"curso";
-    renderFunil();
-  };
-  window.runJornada=function(){
-    S.anaJornadaFiltro=document.getElementById("ana-jf")?.value||"all";
-    S.anaJornadaSort=document.getElementById("ana-js")?.value||"freq";
-    renderFunil();
-  };
-  window.runStatus=function(){
-    S.anaStatusFiltro=document.getElementById("ana-sf")?.value||"all";
-    S.anaStatusGroup=document.getElementById("ana-sg")?.value||"produto";
-    renderFunil();
-  };
-
-  const QS=[{k:"all",l:"Todos"},{k:"hoje",l:"Hoje"},{k:"ontem",l:"Ontem"},{k:"7d",l:"7 dias"},{k:"30d",l:"30 dias"},{k:"mes",l:"Este mês"}];
-  const TABS=[{k:"tempo",l:"⏱ Tempo entre compras"},{k:"jornada",l:"🛒 Jornadas de compra"},{k:"status",l:"📋 Status de compra"}];
-
-  // ── Conteúdo das abas ─────────────────────────────────────────────────────
-  const prodOptions=prods.map(p=>`<option value="${p.id}">${p.label}</option>`).join("");
-
-  // Aba Tempo
-  const tempoHTML=`
-    <div class="period-wrap" style="background:var(--bg);border:0.5px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
-      <div>
-        <div class="kc-lbl" style="margin-bottom:4px">Produto de referência</div>
-        <select id="ana-p1" style="background:var(--card);border:0.5px solid var(--border-h);border-radius:7px;padding:6px 10px;font-size:12px;color:var(--text);min-width:180px">
-          ${prods.map(p=>`<option value="${p.id}"${p.id===S.anaTempoProd1?" selected":""}>${p.label}</option>`).join("")}
-        </select>
-      </div>
-      <div>
-        <div class="kc-lbl" style="margin-bottom:4px">Produto alvo</div>
-        <select id="ana-p2" style="background:var(--card);border:0.5px solid var(--border-h);border-radius:7px;padding:6px 10px;font-size:12px;color:var(--text);min-width:180px">
-          ${prods.map(p=>`<option value="${p.id}"${p.id===S.anaTempoProd2?" selected":""}>${p.label}</option>`).join("")}
-        </select>
-      </div>
-      <button onclick="runTempo()" style="background:var(--text);color:var(--bg);border:none;padding:7px 18px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer">Analisar</button>
-    </div>
-    ${tempoResult ? `
-    <div class="cc">
-      <div class="ch"><span class="ct">${prodLabel(S.anaTempoProd1)} → ${prodLabel(S.anaTempoProd2)}</span><span class="kc-sub">${tempoResult.count} compradores dos dois</span></div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-        <div class="kc"><div class="kc-lbl">Dias (média)</div><div class="kc-val" style="font-size:28px;color:var(--text)">${tempoResult.avg}</div></div>
-        <div class="kc"><div class="kc-lbl">Mesmo dia</div><div class="kc-val" style="font-size:22px;color:#1a7a4a">${((tempoResult.sameDay/tempoResult.count)*100).toFixed(0)}%</div><div class="kc-sub">${tempoResult.sameDay} pessoas</div></div>
-        <div class="kc"><div class="kc-lbl">Até 30 dias</div><div class="kc-val" style="font-size:22px;color:#1c1410">${((tempoResult.within30/tempoResult.count)*100).toFixed(0)}%</div><div class="kc-sub">${tempoResult.within30} pessoas</div></div>
-        <div class="kc"><div class="kc-lbl">Após 30 dias</div><div class="kc-val" style="font-size:22px;color:var(--muted)">${((tempoResult.after30/tempoResult.count)*100).toFixed(0)}%</div><div class="kc-sub">${tempoResult.after30} pessoas</div></div>
-      </div>
-    </div>` : `<div class="cc"><p style="color:var(--hint);font-size:13px;padding:12px 0">Nenhum comprador encontrou os dois produtos no período selecionado.</p></div>`}`;
-
-  // Aba Jornadas
-  const jornadaHTML=`
-    <div class="period-wrap" style="background:var(--bg);border:0.5px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
-      <div>
-        <div class="kc-lbl" style="margin-bottom:4px">Filtrar jornadas</div>
-        <select id="ana-jf" style="background:var(--card);border:0.5px solid var(--border-h);border-radius:7px;padding:6px 10px;font-size:12px;color:var(--text);min-width:200px">
-          <option value="all"${S.anaJornadaFiltro==="all"?" selected":""}>Qualquer combinação</option>
-          <option value="with_curso"${S.anaJornadaFiltro==="with_curso"?" selected":""}>Incluem o Curso</option>
-          <option value="both_obs"${S.anaJornadaFiltro==="both_obs"?" selected":""}>Ambos os Order Bumps</option>
-          <option value="all_products"${S.anaJornadaFiltro==="all_products"?" selected":""}>Todos os produtos</option>
-          <option value="manual_only"${S.anaJornadaFiltro==="manual_only"?" selected":""}>Manual apenas (sem outros)</option>
-        </select>
-      </div>
-      <div>
-        <div class="kc-lbl" style="margin-bottom:4px">Ordenar por</div>
-        <select id="ana-js" style="background:var(--card);border:0.5px solid var(--border-h);border-radius:7px;padding:6px 10px;font-size:12px;color:var(--text);min-width:150px">
-          <option value="freq"${S.anaJornadaSort==="freq"?" selected":""}>Mais frequente</option>
-        </select>
-      </div>
-      <button onclick="runJornada()" style="background:var(--text);color:var(--bg);border:none;padding:7px 18px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer">Analisar</button>
-    </div>
-    <div class="cc">
-      <div class="ch"><span class="ct">Combinações mais comuns</span><span class="kc-sub">${totalBuyers} compradores do Manual</span></div>
-      <div style="display:flex;flex-direction:column;gap:8px">
-        ${jornadaResult.map(j=>{
-          const pct=(j.count/totalBuyers)*100;
-          const barW=Math.round((j.count/maxJornada)*100);
-          return `<div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:11px;color:var(--muted);width:260px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${jornadaLabel(j.ids)}</span>
-            <div style="flex:1;height:22px;background:var(--bg);border-radius:3px;overflow:hidden;position:relative;border:0.5px solid var(--border)">
-              <div style="height:100%;width:${barW}%;background:#2d7d9a;border-radius:3px;opacity:0.7"></div>
-              <span style="position:absolute;right:7px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:500;color:var(--text)">${pct.toFixed(1)}%</span>
-            </div>
-            <span style="font-size:11px;color:var(--muted);width:72px;text-align:right;flex-shrink:0">${j.count} pessoas</span>
-          </div>`;
-        }).join("")}
-      </div>
-    </div>`;
-
-  // Aba Status
-  const {data:stData,totals:stTotals}=statusResult;
-  const stKeys=Object.keys(stData).sort();
-  const stStatusCols=ALL_STATUS.filter(s=>S.funilRows.some(r=>(r["Status da compra"]||"").trim()===s));
-  const statusHTML=`
-    <div class="period-wrap" style="background:var(--bg);border:0.5px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
-      <div>
-        <div class="kc-lbl" style="margin-bottom:4px">Status</div>
-        <select id="ana-sf" style="background:var(--card);border:0.5px solid var(--border-h);border-radius:7px;padding:6px 10px;font-size:12px;color:var(--text);min-width:180px">
-          <option value="all"${S.anaStatusFiltro==="all"?" selected":""}>Todos os status</option>
-          ${stStatusCols.map(s=>`<option value="${s}"${S.anaStatusFiltro===s?" selected":""}>${s}</option>`).join("")}
-        </select>
-      </div>
-      <div>
-        <div class="kc-lbl" style="margin-bottom:4px">Agrupar por</div>
-        <select id="ana-sg" style="background:var(--card);border:0.5px solid var(--border-h);border-radius:7px;padding:6px 10px;font-size:12px;color:var(--text);min-width:140px">
-          <option value="produto"${S.anaStatusGroup==="produto"?" selected":""}>Produto</option>
-          <option value="mes"${S.anaStatusGroup==="mes"?" selected":""}>Mês</option>
-          <option value="status"${S.anaStatusGroup==="status"?" selected":""}>Status</option>
-        </select>
-      </div>
-      <button onclick="runStatus()" style="background:var(--text);color:var(--bg);border:none;padding:7px 18px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer">Analisar</button>
-    </div>
-    <div style="background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden">
-      <table style="width:100%;border-collapse:collapse;font-size:11px">
-        <thead>
-          <tr style="background:var(--bg);border-bottom:1px solid var(--border)">
-            <th style="padding:9px 12px;text-align:left;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);border-right:1px solid var(--border)">${S.anaStatusGroup==="mes"?"Mês":S.anaStatusGroup==="status"?"Status":"Produto"}</th>
-            ${stStatusCols.map(s=>`<th style="padding:9px 12px;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);border-right:1px solid var(--border);white-space:nowrap">${s}</th>`).join("")}
-            <th style="padding:9px 12px;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${stKeys.map((key,i)=>{
-            const row=stData[key]||{};
-            const rowTotal=stStatusCols.reduce((a,s)=>a+(row[s]||0),0);
-            const lbl=S.anaStatusGroup==="produto"?(FUNIL_STEPS.find(s=>s.id===key)?.label||key):key;
-            return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?"var(--card)":"var(--bg)"}">
-              <td style="padding:9px 12px;font-weight:500;border-right:1px solid var(--border)">${lbl}</td>
-              ${stStatusCols.map(s=>`<td style="padding:9px 12px;text-align:center;border-right:1px solid var(--border);color:${s==="Paga"?"#1a7a4a":s==="Reembolsado"||s==="Aguardando reembolso"?"#b91c1c":s==="Em recuperacao"?"#c07800":"var(--text)"}">${row[s]||0}</td>`).join("")}
-              <td style="padding:9px 12px;text-align:center;font-weight:500">${rowTotal}</td>
-            </tr>`;
-          }).join("")}
-          <tr style="border-top:2px solid var(--border-h);background:var(--bg)">
-            <td style="padding:9px 12px;font-weight:700;border-right:1px solid var(--border)">Total</td>
-            ${stStatusCols.map(s=>`<td style="padding:9px 12px;text-align:center;font-weight:600;border-right:1px solid var(--border)">${stTotals[s]||0}</td>`).join("")}
-            <td style="padding:9px 12px;text-align:center;font-weight:700">${stStatusCols.reduce((a,s)=>a+(stTotals[s]||0),0)}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>`;
-
-  const tabContent={tempo:tempoHTML,jornada:jornadaHTML,status:statusHTML};
-
-  el.innerHTML=`
-    <div class="hdr">
-      <div>
-        <div class="hdr-title">Análise exploratória do funil</div>
-        <div class="hdr-sub">atualizado em: ${S.updated||"—"} · produtos identificados automaticamente</div>
-      </div>
-      <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
-    </div>
-    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
-
-    <div class="period-wrap">
-      <div class="period-top">
-        <span class="period-lbl">Período</span>
-        <div class="drbox">
-          <span class="drbox-icon">📅</span>
-          <input type="date" value="${S.anaStartDate}" onchange="onAnaDC('s',this.value)"/>
-          <span class="drbox-sep">—</span>
-          <input type="date" value="${S.anaEndDate}" onchange="onAnaDC('e',this.value)"/>
-        </div>
-      </div>
-      <div class="period-quick">
-        ${QS.map(q=>`<button class="btn-q${(S.anaActiveQuick||"all")===q.k?" on":""}" onclick="applyAnaQuick('${q.k}')">${q.l}</button>`).join("")}
-      </div>
-    </div>
-
-    <div style="display:flex;gap:0;margin-bottom:18px;border-bottom:1px solid var(--border)">
-      ${TABS.map(t=>`<button onclick="setAnaTab('${t.k}')" style="padding:9px 18px;font-size:12px;font-weight:500;background:transparent;border:none;border-bottom:2px solid ${S.aTab===t.k?"var(--text)":"transparent"};color:${S.aTab===t.k?"var(--text)":"var(--muted)"};cursor:pointer;margin-bottom:-1px;white-space:nowrap">${t.l}</button>`).join("")}
-    </div>
-
-    ${tabContent[S.aTab]||""}
-
-    <p class="foot">Base Vendas - Completo (Eduzz) · Google Sheets API v4</p>`;
+    <p class="foot">Base Vendas - Completo (Eduzz) + Base Meta (Stract) · Google Sheets API v4</p>`;
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
