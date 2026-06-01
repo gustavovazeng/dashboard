@@ -209,6 +209,7 @@ function subDays(iso,n){ return addDays(iso,-n); }
 
 // ── Format helpers ─────────────────────────────────────────────────────────
 function parseBRL(s){ if(!s||s==="-"||s==="0")return 0;return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",",".").trim())||0; }
+function parseBRLAbs(s){ return Math.abs(parseBRL(s)); }
 function toISO(s){ if(!s||s==="Date"||s==="")return null;s=String(s).trim();if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s;const p=s.split("/");if(p.length===3){const y=p[2].length===4?p[2]:"20"+p[2];return `${y}-${p[1].padStart(2,"0")}-${p[0].padStart(2,"0")}`;}return null; }
 function fBRL(n){ return "R$ "+(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function fBRLShort(n){ const a=Math.abs(n||0),sg=n<0?"-":"";if(a>=1000)return sg+"R$"+(a/1000).toFixed(1)+"k";return sg+"R$"+Math.round(a); }
@@ -316,7 +317,7 @@ async function loadData(){
       if(!vD[d])vD[d]={qtd:0,valor:0,taxa:0};
       vD[d].qtd   += 1;
       vD[d].valor += parseBRL(r["Valor do produto"]);
-      vD[d].taxa  += parseBRL(r["Taxa da plataforma"]);
+      vD[d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
       // Por anúncio — extrair Ad ID do campo "Ad Id" (pode ser string longa)
       const rawAdId=r["Ad Id"]||"";
       const adId=extractAdId(rawAdId);
@@ -325,13 +326,13 @@ async function loadData(){
         if(!vByAd[adId])vByAd[adId]={qtd:0,valor:0,taxa:0};
         vByAd[adId].qtd   += 1;
         vByAd[adId].valor += parseBRL(r["Valor do produto"]);
-        vByAd[adId].taxa  += parseBRL(r["Taxa da plataforma"]);
+        vByAd[adId].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
         // Por data (para filtrar por período na aba Anúncios)
         if(!vByAdDate[adId]) vByAdDate[adId]={};
         if(!vByAdDate[adId][d]) vByAdDate[adId][d]={qtd:0,valor:0,taxa:0};
         vByAdDate[adId][d].qtd   += 1;
         vByAdDate[adId][d].valor += parseBRL(r["Valor do produto"]);
-        vByAdDate[adId][d].taxa  += parseBRL(r["Taxa da plataforma"]);
+        vByAdDate[adId][d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
       }
     }
     S.vendas=vD;
@@ -1033,7 +1034,7 @@ const FUNIL_STEPS=[
 ];
 
 function buildFunilData(rows, start, end){
-  // Filtra por período se definido
+  // filtered: só para análise de status/perdas — respeita período
   const filtered = rows.filter(r=>{
     if(!start && !end) return true;
     const d = toISO(r["Data da compra"]||r["Data"]);
@@ -1042,6 +1043,10 @@ function buildFunilData(rows, start, end){
     if(end   && d>end)   return false;
     return true;
   });
+
+  // Para buyers: usa TODAS as linhas (sem filtro de período)
+  // O período só controla se a compra entra nos totais, não quem é o comprador
+  const allRows = rows;
 
   // Agrupa por comprador (e-mail + cpf + telefone)
   // Identifica o comprador único
@@ -1080,14 +1085,14 @@ function buildFunilData(rows, start, end){
     return b;
   }
 
-  for(const r of filtered){
+  for(const r of allRows){
     const prodId = classifyProduct(r["Nome do produto"]);
     if(!prodId) continue;
     const buyer = getOrCreate(r);
     const d = toISO(r["Data da compra"]||r["Data"]) || "";
     const status = (r["Status da compra"]||"").trim();
     const valor  = parseBRL(r["Valor do produto"]);
-    const taxa   = parseBRL(r["Taxa da plataforma"]);
+    const taxa   = parseBRLAbs(r["Taxa da plataforma"]);
     buyer.products.push({id:prodId, date:d, status, valor, taxa});
   }
 
@@ -1115,23 +1120,32 @@ function buildFunilData(rows, start, end){
     statusByProd[prodId][st]=(statusByProd[prodId][st]||0)+1;
   }
 
-  // Funil: só Paga, só após manual
-  // Manual: conta TODAS as compras (inclusive duplicadas do mesmo comprador)
+  // Funil: só Paga, só após manual, dentro do período selecionado
+  // Manual: conta todas as linhas brutas Paga no período
   for(const r of filtered){
     if(classifyProduct(r["Nome do produto"])!=="manual") continue;
     if((r["Status da compra"]||"").trim()!=="Paga") continue;
     counts.manual++;
     fat.manual   += parseBRL(r["Valor do produto"]);
-    taxa.manual  += parseBRL(r["Taxa da plataforma"]);
+    taxa.manual  += parseBRLAbs(r["Taxa da plataforma"]);
   }
-  // Outros produtos: por comprador, só após a primeira compra do Manual
-  // Conta todas as compras do produto (sem dedup por produto)
+  // Outros produtos: por comprador (identificado em allRows), conta compras
+  // que estão dentro do período E após a primeira compra do Manual (qualquer época)
   for(const [,buyer] of buyers){
     const paid = buyer.products.filter(p=>p.status==="Paga");
+    // Primeira compra do Manual de todos os tempos
     const manualPurchases = paid.filter(p=>p.id==="manual").sort((a,b)=>a.date.localeCompare(b.date));
     if(!manualPurchases.length) continue;
     const manualDate = manualPurchases[0].date;
-    const others = paid.filter(p=>p.id!=="manual" && p.date>=manualDate);
+    // Outros produtos: dentro do período E após o manual
+    const others = paid.filter(p=>{
+      if(p.id==="manual") return false;
+      if(p.date < manualDate) return false;
+      // dentro do período
+      if(start && p.date < start) return false;
+      if(end   && p.date > end)   return false;
+      return true;
+    });
     for(const p of others){
       counts[p.id]++;
       fat[p.id]+=p.valor;
@@ -1141,7 +1155,18 @@ function buildFunilData(rows, start, end){
 
   const manualCount = counts.manual || 1;
   const totalFat  = Object.values(fat).reduce((a,b)=>a+b,0);
-  const totalTaxa = Object.values(taxa).reduce((a,b)=>a+b,0);
+  // Taxa Eduzz: inclui Paga + Reembolsado + Aguardando Reembolso
+  // (Eduzz cobra taxa mesmo em reembolsos)
+  const totalTaxaPaga = Object.values(taxa).reduce((a,b)=>a+b,0);
+  let totalTaxaReemb = 0;
+  for(const r of filtered){
+    const st=(r["Status da compra"]||"").trim();
+    if(st!=="Reembolsado" && st!=="Aguardando Reembolso") continue;
+    const prodId=classifyProduct(r["Nome do produto"]);
+    if(!prodId) continue;
+    totalTaxaReemb += parseBRLAbs(r["Taxa da plataforma"]);
+  }
+  const totalTaxa = totalTaxaPaga + totalTaxaReemb;
 
   // Spend no período (da base Meta)
   let totalSpend=0;
