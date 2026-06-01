@@ -1034,11 +1034,15 @@ function buildFunilData(rows, start, end){
   // Agrupa por comprador (e-mail + cpf + telefone)
   // Identifica o comprador único
   function buyerKey(r){
-    return [
-      (r["Email"]||"").toLowerCase().trim(),
-      (r["CPF Comprador"]||"").replace(/\D/g,""),
-      (r["Telefone"]||"").replace(/\D/g,""),
-    ].filter(Boolean);
+    // Retorna chaves únicas: cada campo é prefixado para evitar colisão entre email/cpf/tel
+    const keys=[];
+    const em=(r["Email"]||"").toLowerCase().trim();
+    const cpf=(r["CPF Comprador"]||"").replace(/[^\d]/g,"");
+    const tel=(r["Telefone"]||"").replace(/[^\d]/g,"");
+    if(em)  keys.push("e:"+em);
+    if(cpf) keys.push("c:"+cpf);
+    if(tel) keys.push("t:"+tel);
+    return keys;
   }
 
   // Mapeia comprador -> conjunto de produtos comprados com data
@@ -1100,25 +1104,26 @@ function buildFunilData(rows, start, end){
   }
 
   // Funil: só Paga, só após manual
+  // Manual: conta TODAS as compras (inclusive duplicadas do mesmo comprador)
+  for(const r of filtered){
+    if(classifyProduct(r["Nome do produto"])!=="manual") continue;
+    if((r["Status da compra"]||"").trim()!=="Paga") continue;
+    counts.manual++;
+    fat.manual   += parseBRL(r["Valor do produto"]);
+    taxa.manual  += parseBRL(r["Taxa da plataforma"]);
+  }
+  // Outros produtos: por comprador, só após a primeira compra do Manual
+  // Conta todas as compras do produto (sem dedup por produto)
   for(const [,buyer] of buyers){
     const paid = buyer.products.filter(p=>p.status==="Paga");
-    const manualPurchase = paid.filter(p=>p.id==="manual").sort((a,b)=>a.date.localeCompare(b.date))[0];
-    if(!manualPurchase) continue; // não comprou manual
-
-    counts.manual++;
-    fat.manual += manualPurchase.valor;
-    taxa.manual += manualPurchase.taxa||0;
-
-    const manualDate = manualPurchase.date;
+    const manualPurchases = paid.filter(p=>p.id==="manual").sort((a,b)=>a.date.localeCompare(b.date));
+    if(!manualPurchases.length) continue;
+    const manualDate = manualPurchases[0].date;
     const others = paid.filter(p=>p.id!=="manual" && p.date>=manualDate);
-    const seen = new Set();
     for(const p of others){
-      if(!seen.has(p.id)){
-        seen.add(p.id);
-        counts[p.id]++;
-        fat[p.id]+=p.valor;
-        taxa[p.id]+=(p.taxa||0);
-      }
+      counts[p.id]++;
+      fat[p.id]+=p.valor;
+      taxa[p.id]+=(p.taxa||0);
     }
   }
 
@@ -1260,78 +1265,37 @@ function renderFunil(){
     <!-- Funil + Perdas lado a lado -->
     <div style="display:grid;grid-template-columns:1fr 300px;gap:14px;margin-bottom:20px;align-items:start">
 
-      <!-- Funil SVG -->
+      <!-- Funil Barras (Opção B) -->
       <div class="cc" style="padding:16px">
-        <div class="section-lbl" style="margin-top:0;margin-bottom:12px">Funil de conversão</div>
-        <svg viewBox="0 0 520 420" xmlns="http://www.w3.org/2000/svg" width="100%" role="img" aria-label="Funil de vendas">
-          <defs>
-            <marker id="arf" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-              <path d="M0,1 L6,3.5 L0,6 Z" fill="#a0917e" opacity="0.6"/>
-            </marker>
-          </defs>
-
-          <!-- MANUAL -->
-          <polygon points="120,0 400,0 375,80 145,80" fill="${COLORS.manual.fill}"/>
-          ${bar("manual",153,66,194,"white")}
-          <text x="260" y="26" text-anchor="middle" font-size="12" font-weight="500" fill="${COLORS.manual.text}">Manual Definitivo</text>
-          <text x="260" y="42" text-anchor="middle" font-size="9" fill="${COLORS.manual.sub}">Entrada · 100%</text>
-          <line x1="375" y1="36" x2="408" y2="36" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-          <text x="414" y="28" font-size="10" font-weight="500" fill="var(--text)">${counts.manual}</text>
-          <text x="414" y="41" font-size="9" fill="#a0917e">${fBRLShort(fat.manual)}</text>
-
-          <!-- seta OBs -->
-          <text x="260" y="97" text-anchor="middle" font-size="9" fill="#a0917e">▼  ${pct("checklist").toFixed(0)}% checklist · ${pct("planFin").toFixed(0)}% plan. financiamento</text>
-          <text x="260" y="110" text-anchor="middle" font-size="8" fill="#a0917e" font-style="italic">checkout simultâneo</text>
-
-          <!-- OB1 CHECKLIST -->
-          <polygon points="145,117 248,117 237,183 156,183" fill="${COLORS.checklist.fill}"/>
-          ${bar("checklist",160,172,73,"white")}
-          <text x="196" y="141" text-anchor="middle" font-size="10" font-weight="500" fill="${COLORS.checklist.text}">Checklist</text>
-          <text x="196" y="155" text-anchor="middle" font-size="8" fill="${COLORS.checklist.sub}">OB1 · ${pct("checklist").toFixed(0)}%</text>
-          <line x1="145" y1="147" x2="112" y2="147" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-          <text x="0" y="139" font-size="10" font-weight="500" fill="var(--text)">${counts.checklist}</text>
-          <text x="0" y="152" font-size="9" fill="#a0917e">${fBRLShort(fat.checklist)}</text>
-
-          <!-- gap OBs -->
-          <rect x="248" y="117" width="14" height="66" fill="var(--bg)"/>
-          <line x1="255" y1="117" x2="255" y2="183" stroke="#d8cfc3" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
-
-          <!-- OB2 PLANILHA FIN -->
-          <polygon points="262,117 375,117 364,183 273,183" fill="${COLORS.planFin.fill}"/>
-          ${bar("planFin",277,172,83,"white")}
-          <text x="318" y="139" text-anchor="middle" font-size="10" font-weight="500" fill="${COLORS.planFin.text}">Plan. Financiamento</text>
-          <text x="318" y="154" text-anchor="middle" font-size="8" fill="${COLORS.planFin.sub}">OB2 · ${pct("planFin").toFixed(0)}%</text>
-          <line x1="364" y1="147" x2="397" y2="147" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-          <text x="403" y="139" font-size="10" font-weight="500" fill="var(--text)">${counts.planFin}</text>
-          <text x="403" y="152" font-size="9" fill="#a0917e">${fBRLShort(fat.planFin)}</text>
-
-          <!-- seta upsell -->
-          <text x="260" y="200" text-anchor="middle" font-size="9" fill="#a0917e">▼  ${pct("planLucro").toFixed(0)}% compraram a planilha lucro</text>
-
-          <!-- UPSELL -->
-          <polygon points="156,208 364,208 342,288 178,288" fill="${COLORS.planLucro.fill}"/>
-          ${bar("planLucro",184,276,154,"white")}
-          <text x="260" y="235" text-anchor="middle" font-size="11" font-weight="500" fill="${COLORS.planLucro.text}">Planilha Lucro</text>
-          <text x="260" y="251" text-anchor="middle" font-size="9" fill="${COLORS.planLucro.sub}">Upsell · ${pct("planLucro").toFixed(0)}%</text>
-          <line x1="156" y1="245" x2="112" y2="245" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-          <text x="0" y="237" font-size="10" font-weight="500" fill="var(--text)">${counts.planLucro}</text>
-          <text x="0" y="250" font-size="9" fill="#a0917e">${fBRLShort(fat.planLucro)}</text>
-
-          <!-- seta curso -->
-          <text x="260" y="304" text-anchor="middle" font-size="9" fill="#a0917e">▼  ${pct("curso").toFixed(1)}% compraram o curso</text>
-
-          <!-- CURSO -->
-          <polygon points="178,312 342,312 322,385 198,385" fill="${COLORS.curso.fill}"/>
-          ${bar("curso",202,373,116,"white")}
-          <text x="260" y="338" text-anchor="middle" font-size="11" font-weight="500" fill="${COLORS.curso.text}">Curso</text>
-          <text x="260" y="354" text-anchor="middle" font-size="9" fill="${COLORS.curso.sub}">Ascensão · ${pct("curso").toFixed(1)}%</text>
-          <line x1="322" y1="346" x2="355" y2="346" stroke="#a0917e" stroke-width="0.8" opacity="0.5" marker-end="url(#arf)"/>
-          <text x="361" y="338" font-size="10" font-weight="500" fill="var(--text)">${counts.curso}</text>
-          <text x="361" y="351" font-size="9" fill="#a0917e">${fBRLShort(fat.curso)}</text>
-
-          <!-- ponta -->
-          <polygon points="198,388 322,388 308,415 212,415" fill="#712B13"/>
-        </svg>
+        <div class="section-lbl" style="margin-top:0;margin-bottom:16px">Funil de conversão</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          ${[
+            {id:"manual",    label:"Manual Definitivo",      step:"Entrada",    color:"#185FA5"},
+            {id:"checklist", label:"Checklist",              step:"Order Bump 1",color:"#3B6D11"},
+            {id:"planFin",   label:"Plan. Financiamento",    step:"Order Bump 2",color:"#0F6E56"},
+            {id:"planLucro", label:"Planilha Lucro",         step:"Upsell",      color:"#854F0B"},
+            {id:"curso",     label:"Curso",                  step:"Ascensão",    color:"#993C1D"},
+          ].map(s=>{
+            const p=pct(s.id);
+            const barW=Math.max(p,0.5);
+            return \`<div style="display:flex;align-items:center;gap:12px">
+              <div style="width:160px;flex-shrink:0">
+                <div style="font-size:11px;font-weight:600;color:var(--text)">\${s.label}</div>
+                <div style="font-size:9px;color:var(--hint);margin-top:1px">\${s.step}</div>
+              </div>
+              <div style="flex:1;height:30px;background:var(--bg);border-radius:5px;overflow:hidden;position:relative;border:0.5px solid var(--border)">
+                <div style="height:100%;width:\${barW}%;background:\${s.color};border-radius:5px;display:flex;align-items:center;padding-left:8px;min-width:2px">
+                  \${barW>8?\`<span style="font-size:11px;font-weight:500;color:#fff;white-space:nowrap">\${p.toFixed(1)}%</span>\`:""}
+                </div>
+                \${barW<=8?\`<span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:600;color:\${s.color}">\${p.toFixed(1)}%</span>\`:""}
+              </div>
+              <div style="width:90px;flex-shrink:0;text-align:right">
+                <div style="font-size:13px;font-weight:500;color:var(--text)">\${(counts[s.id]||0).toLocaleString("pt-BR")}</div>
+                <div style="font-size:10px;color:var(--hint)">\${fBRLShort(fat[s.id]||0)}</div>
+              </div>
+            </div>\`;
+          }).join("")}
+        </div>
       </div>
 
       <!-- Análise de perdas -->
@@ -1414,8 +1378,17 @@ function buildAnaContent(fd, buyers){
   if(start||end){
     ana_buyers=new Map();
     function getOrCreate2(r){
-      const keys=[(r["Email"]||"").toLowerCase().trim(),(r["CPF Comprador"]||"").replace(/\D/g,""),(r["Telefone"]||"").replace(/\D/g,"")].filter(Boolean);
-      for(const [,b] of ana_buyers){ for(const k of keys){ if(k&&b.keys.has(k)){ keys.forEach(k2=>{if(k2)b.keys.add(k2);}); return b; } } }
+      const em=(r["Email"]||"").toLowerCase().trim();
+      const cpf=(r["CPF Comprador"]||"").replace(/[^\d]/g,"");
+      const tel=(r["Telefone"]||"").replace(/[^\d]/g,"");
+      const keys=[];
+      if(em)  keys.push("e:"+em);
+      if(cpf) keys.push("c:"+cpf);
+      if(tel) keys.push("t:"+tel);
+      if(!keys.length) return null;
+      for(const [,b] of ana_buyers){
+        for(const k of keys){ if(b.keys.has(k)){ keys.forEach(k2=>b.keys.add(k2)); return b; } }
+      }
       const b={keys:new Set(keys),products:[]};
       ana_buyers.set(keys[0]||Math.random().toString(),b);
       return b;
@@ -1423,6 +1396,7 @@ function buildAnaContent(fd, buyers){
     for(const r of rows){
       const id=classifyProduct(r["Nome do produto"]);if(!id)continue;
       const b=getOrCreate2(r);
+      if(!b)continue;
       const d=toISO(r["Data da compra"]||r["Data"])||"";
       const st=(r["Status da compra"]||"").trim();
       b.products.push({id,date:d,status:st});
