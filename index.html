@@ -210,7 +210,21 @@ function subDays(iso,n){ return addDays(iso,-n); }
 // ── Format helpers ─────────────────────────────────────────────────────────
 function parseBRL(s){ if(!s||s==="-"||s==="0")return 0;return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",",".").trim())||0; }
 function parseBRLAbs(s){ return Math.abs(parseBRL(s)); }
-function toISO(s){ if(!s||s==="Date"||s==="")return null;s=String(s).trim();if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s;const p=s.split("/");if(p.length===3){const y=p[2].length===4?p[2]:"20"+p[2];return `${y}-${p[1].padStart(2,"0")}-${p[0].padStart(2,"0")}`;}return null; }
+
+// Normaliza status numérico da Eduzz para texto
+function normalizeStatus(s){
+  if(!s && s!==0) return "";
+  const m={"3":"Paga","7":"Reembolsado","10":"Expirado","11":"Em Recuperacao","1":"Aberta"};
+  const str=String(s).trim();
+  return m[str]||str;
+}
+
+// Extrai só a data de strings com ou sem horário: "dd/mm/yyyy HH:MM:SS" → "dd/mm/yyyy"
+function stripTime(s){
+  if(!s) return s;
+  return String(s).trim().split(" ")[0];
+}
+function toISO(s){ if(!s||s==="Date"||s==="")return null;s=String(s).trim().split(" ")[0]; if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s;const p=s.split("/");if(p.length===3){const y=p[2].length===4?p[2]:"20"+p[2];return `${y}-${p[1].padStart(2,"0")}-${p[0].padStart(2,"0")}`;}return null; }
 function fBRL(n){ return "R$ "+(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function fBRLShort(n){ const a=Math.abs(n||0),sg=n<0?"-":"";if(a>=1000)return sg+"R$"+(a/1000).toFixed(1)+"k";return sg+"R$"+Math.round(a); }
 function fPct(n){ return (n||0).toFixed(1)+"%"; }
@@ -340,7 +354,9 @@ async function loadData(){
     S.vendasByAdDate=vByAdDate;
 
     // ── Funil — Base Vendas Completo ──────────────────────────────────────
-    S.funilRows = parseSheet(fj);
+    // Expande formato horizontal (OBs na mesma linha) e deduplica eventos webhook
+    const rawFunil = parseSheet(fj);
+    S.funilRows = deduplicateFunilRows(expandFunilRows(rawFunil));
     try{ S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
     catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
 
@@ -1033,6 +1049,109 @@ const FUNIL_STEPS=[
   {id:"curso",     label:"Curso",                  step:"Ascensão"},
 ];
 
+// Expande linhas da Base Vendas - Completo
+// Formato antigo: 1 linha = 1 produto
+// Formato novo: 1 linha pode ter produto principal + OB1 + OB2 na mesma linha
+// Upsell e Curso continuam em linhas separadas em ambos os formatos
+function expandFunilRows(rawRows){
+  const out=[];
+  for(const r of rawRows){
+    if(!r["Nome do produto"] && !r["Data da compra"]) continue;
+    // Normaliza status e data
+    const st=normalizeStatus(r["Status da compra"]);
+    const dataBruta=stripTime(r["Data da compra"]||r["Data"]||"");
+    const base={
+      "Email":r["Email"]||"",
+      "CPF Comprador":r["CPF Comprador"]||"",
+      "Telefone":r["Telefone"]||"",
+      "Nome":r["Nome"]||"",
+      "Status da compra":st,
+      "Data da compra":dataBruta,
+    };
+    // Produto principal
+    if(r["Nome do produto"]){
+      out.push({...base,
+        "Nome do produto":r["Nome do produto"],
+        "Valor do produto":r["Valor do produto"]||"0",
+        "Taxa da plataforma":r["Taxa da plataforma"]||"0",
+      });
+    }
+    // OB1 — só no novo formato horizontal
+    if(r["Nome do orderbump 01"]){
+      out.push({...base,
+        "Nome do produto":r["Nome do orderbump 01"],
+        "Valor do produto":r["Valor order bump 01"]||"0",
+        "Taxa da plataforma":"0",
+      });
+    }
+    // OB2 — só no novo formato horizontal
+    if(r["Nome do orderbump 02"]){
+      out.push({...base,
+        "Nome do produto":r["Nome do orderbump 02"],
+        "Valor do produto":r["Valor order bump 02"]||"0",
+        "Taxa da plataforma":"0",
+      });
+    }
+  }
+  return out;
+}
+
+// Deduplicação de eventos webhook:
+// Mesma pessoa + mesmo produto + dentro de 7 dias → mantém o mais recente por data/hora
+// Se data/hora igual → hierarquia: Reembolsado > Aguardando Reembolso > Em Recuperacao > Paga > Expirado > outros
+function deduplicateFunilRows(rows){
+  const STATUS_PRIORITY={"Reembolsado":6,"Aguardando Reembolso":5,"Em Recuperacao":4,"Paga":3,"Expirado":2,"Aberta":1,"":0};
+  function sp(st){ return STATUS_PRIORITY[st]||0; }
+
+  // Chave: email+cpf+tel+produto+janela7dias
+  // Agrupa por chave e mantém o de maior prioridade/data
+  const groups=new Map();
+  for(const r of rows){
+    const em=(r["Email"]||"").toLowerCase().trim();
+    const cpf=(r["CPF Comprador"]||"").replace(/[^\d]/g,"");
+    const tel=(r["Telefone"]||"").replace(/[^\d]/g,"");
+    const prod=(r["Nome do produto"]||"").trim().toUpperCase();
+    const dataBruta=r["Data da compra"]||"";
+    const dateStr=toISO(dataBruta)||"";
+    const identity=em||cpf||tel;
+    if(!identity||!prod||!dateStr) { /* sem chave — adiciona direto */ groups.set(Math.random().toString(),r); continue; }
+
+    // Encontra grupo existente com mesma identidade + produto dentro de 7 dias
+    let found=null;
+    for(const [k,g] of groups){
+      if(!g._identity||!g._prod) continue;
+      if(g._prod!==prod) continue;
+      // verifica identidade
+      const gEm=(g["Email"]||"").toLowerCase().trim();
+      const gCpf=(g["CPF Comprador"]||"").replace(/[^\d]/g,"");
+      const gTel=(g["Telefone"]||"").replace(/[^\d]/g,"");
+      const identMatch=(em&&gEm&&em===gEm)||(cpf&&gCpf&&cpf===gCpf)||(tel&&gTel&&tel===gTel);
+      if(!identMatch) continue;
+      // verifica janela 7 dias
+      const d1=new Date((g._dateStr||"")+"T12:00:00Z");
+      const d2=new Date(dateStr+"T12:00:00Z");
+      const diffDays=Math.abs((d2-d1)/(86400000));
+      if(diffDays<=7){ found=k; break; }
+    }
+
+    const rWithMeta={...r,_identity:identity,_prod:prod,_dateStr:dateStr};
+    if(found){
+      const existing=groups.get(found);
+      // Mantém o mais recente; se empate, maior prioridade de status
+      const existDate=existing._dateStr||"";
+      const newDate=dateStr;
+      const existSP=sp(existing["Status da compra"]||"");
+      const newSP=sp(r["Status da compra"]||"");
+      if(newDate>existDate||(newDate===existDate&&newSP>existSP)){
+        groups.set(found,rWithMeta);
+      }
+    } else {
+      groups.set(Math.random().toString(),rWithMeta);
+    }
+  }
+  return Array.from(groups.values());
+}
+
 function buildFunilData(rows, start, end){
   // filtered: só para análise de status/perdas — respeita período
   const filtered = rows.filter(r=>{
@@ -1090,7 +1209,7 @@ function buildFunilData(rows, start, end){
     if(!prodId) continue;
     const buyer = getOrCreate(r);
     const d = toISO(r["Data da compra"]||r["Data"]) || "";
-    const status = (r["Status da compra"]||"").trim();
+    const status = normalizeStatus((r["Status da compra"]||"").trim());
     const valor  = parseBRL(r["Valor do produto"]);
     const taxa   = parseBRLAbs(r["Taxa da plataforma"]);
     buyer.products.push({id:prodId, date:d, status, valor, taxa});
@@ -1112,7 +1231,7 @@ function buildFunilData(rows, start, end){
   for(const r of filtered){
     const prodId=classifyProduct(r["Nome do produto"]);
     if(!prodId) continue;
-    const st=(r["Status da compra"]||"").trim();
+    const st=normalizeStatus((r["Status da compra"]||"").trim());
     const val=parseBRL(r["Valor do produto"]);
     statusCounts[st]=(statusCounts[st]||0)+1;
     statusVals[st]=(statusVals[st]||0)+val;
@@ -1124,7 +1243,7 @@ function buildFunilData(rows, start, end){
   // Manual: conta todas as linhas brutas Paga no período
   for(const r of filtered){
     if(classifyProduct(r["Nome do produto"])!=="manual") continue;
-    if((r["Status da compra"]||"").trim()!=="Paga") continue;
+    if(normalizeStatus((r["Status da compra"]||"").trim())!=="Paga") continue;
     counts.manual++;
     fat.manual   += parseBRL(r["Valor do produto"]);
     taxa.manual  += parseBRLAbs(r["Taxa da plataforma"]);
@@ -1160,7 +1279,7 @@ function buildFunilData(rows, start, end){
   const totalTaxaPaga = Object.values(taxa).reduce((a,b)=>a+b,0);
   let totalTaxaReemb = 0;
   for(const r of filtered){
-    const st=(r["Status da compra"]||"").trim();
+    const st=normalizeStatus((r["Status da compra"]||"").trim());
     if(st!=="Reembolsado" && st!=="Aguardando Reembolso") continue;
     const prodId=classifyProduct(r["Nome do produto"]);
     if(!prodId) continue;
@@ -1183,21 +1302,19 @@ function buildFunilData(rows, start, end){
     ltv:  totalFat/manualCount,
     lucro: totalFat - totalTaxa - (totalSpend*TAXA_IMPOSTO),
     ascensao: manualCount>0 ? ((manualCount - (manualCount - Object.keys(counts).filter(k=>k!=="manual"&&counts[k]>0).reduce((a,k)=>Math.min(a,counts.manual),counts.manual)))/manualCount)*100 : 0,
-    // Taxa real: % de compradores do manual que compraram qualquer outro produto
-    taxaAscensao: manualCount>0 ? (Object.values({...counts,manual:0}).reduce((a,b)=>a+(b>0?1:0),0) > 0
-      ? (function(){
-          // conta buyers que compraram ao menos 1 produto além do manual
-          let cnt=0;
-          for(const [,buyer] of buyers){
-            const paid=buyer.products.filter(p=>p.status==="Paga");
-            const mp=paid.filter(p=>p.id==="manual").sort((a,b)=>a.date.localeCompare(b.date))[0];
-            if(!mp) continue;
-            const others=paid.filter(p=>p.id!=="manual"&&p.date>=mp.date);
-            if(others.length>0) cnt++;
-          }
-          return manualCount>0?(cnt/manualCount)*100:0;
-        })()
-      : 0) : 0,
+    // Taxa de ascensão: % de compradores únicos do Manual que compraram planLucro e/ou curso
+    taxaAscensao: (function(){
+      if(!manualCount) return 0;
+      let cnt=0;
+      for(const [,buyer] of buyers){
+        const paid=buyer.products.filter(p=>p.status==="Paga");
+        const mp=paid.filter(p=>p.id==="manual").sort((a,b)=>a.date.localeCompare(b.date))[0];
+        if(!mp) continue;
+        const ascendeu=paid.some(p=>(p.id==="planLucro"||p.id==="curso")&&p.date>=mp.date);
+        if(ascendeu) cnt++;
+      }
+      return (cnt/manualCount)*100;
+    })(),
     statusCounts, statusVals, statusByProd, buyers,
   };
 }
@@ -1371,14 +1488,10 @@ function renderFunil(){
           <div class="kc-lbl" style="color:#c07800">Em recuperação</div>
           <div class="kc-val" style="color:#c07800;font-size:19px">${fBRL(valRec)}</div>
           <div class="kc-sub">${qtdRec} pedidos · ${pctRec.toFixed(1)}% do fat.</div>
-          <div style="margin-top:8px;background:#f3f1ed;border-radius:5px;padding:5px 7px">
-            <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:1px">Valor potencial</div>
-            <div style="font-size:13px;font-weight:500;color:#1a7a4a">+ ${fBRL(valRec)}</div>
-          </div>
         </div>
 
         <div class="kc" style="border-left:3px solid #a0917e">
-          <div class="kc-lbl">Não convertidos</div>
+          <div class="kc-lbl">Faturas em aberto</div>
           <div class="kc-val" style="color:#1c1410;font-size:19px">${fBRL(valAbrt)}</div>
           <div class="kc-sub">${qtdAbrt} pedidos · ${pctAbrt.toFixed(1)}% do fat.</div>
           <div style="margin-top:8px;display:flex;gap:6px">
