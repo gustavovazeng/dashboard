@@ -167,17 +167,13 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer}
 const IS_FILE = location.protocol === "file:";
 const API_KEY = "AIzaSyDxMp-u0RUfy-Xv0jICULZbJGpuAUxqQPI";
 
-// Base Meta — planilha separada
-const SHEET_META   = "1gaMsxGBZ75oVeDJYQo0vdrW6PGoPC4DuxBmkbJ_Yf9s";
-// Base Vendas — planilha separada
-const SHEET_VENDAS = "1wiVtCRF1eE8TzJEeteK7syCeCwVjSLaF6H-glGXP9KU";
-// Base Vendas Completo — planilha separada (2 abas)
-const SHEET_FUNIL  = "1JlVCbaJwJYgfhJW4XZHptWlAeQdHUQcFDgpGyga-lBA";
+// Base Meta — API JSON (rápida, poucos dados)
+const SHEET_META = "1gaMsxGBZ75oVeDJYQo0vdrW6PGoPC4DuxBmkbJ_Yf9s";
+const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_META}/values/${encodeURIComponent("Base Meta")}?key=${API_KEY}`;
 
-const URL_META         = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_META}/values/${encodeURIComponent("Base Meta")}?key=${API_KEY}`;
-const URL_VENDAS       = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_VENDAS}/values/${encodeURIComponent("📥 Base Vendas")}?key=${API_KEY}`;
-const URL_FUNIL_AUTO   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_FUNIL}/values/${encodeURIComponent("📥 Base Vendas - Completo")}?key=${API_KEY}`;
-const URL_FUNIL_MANUAL = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_FUNIL}/values/${encodeURIComponent("📥 Base Vendas - Completo - manual")}?key=${API_KEY}`;
+// Base Vendas e Funil — CSV publicado (muito mais rápido para abas grandes)
+const URL_VENDAS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSO_yG7nRSA5yxdSy6UMRdG9--MoVFqSPjujBsgQ8H0NUtinq2Gb_zyGzRPp_f5h3p9AhfOgQpHfTmv/pub?output=csv";
+const URL_FUNIL  = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRc3gLEev3ZFLYl6y5ZrxsIl163VG2JoglN1tMurbUX6tOekhCBtfGGqLepyPL2VxiooNV8je3cG8Lv/pub?output=csv";
 
 // Mapeamento do funil — ordem importa
 const FUNIL_PRODUTOS = [
@@ -356,21 +352,36 @@ async function loadData(){
       S.error="Tempo esgotado. Verifique a conexão e tente atualizar.";render();}
   },90000);
   try {
-    // Meta: pequena — fetch simples
-    // Vendas e Funil manual: grandes — fetch paginado em blocos de 5000
-    const [mj,vj,fjAuto,fjMan]=await Promise.all([
-      fetch(URL_META).then(r=>{ if(!r.ok)throw new Error(`HTTP ${r.status} ao carregar Meta`); return r.json(); }),
-      fetchSheetPaged(SHEET_VENDAS,   "📥 Base Vendas",                          API_KEY),
-      fetchSheetPaged(SHEET_FUNIL,    "📥 Base Vendas - Completo",               API_KEY, 2000),
-      fetchSheetPaged(SHEET_FUNIL,    "📥 Base Vendas - Completo - manual",      API_KEY),
+    // Meta: API JSON | Vendas + Funil: CSV publicado (mais rápido)
+    const [metaRes,vendasRes,funilRes]=await Promise.all([
+      fetch(URL_META),
+      fetch(URL_VENDAS),
+      fetch(URL_FUNIL),
     ]);
-    // Combina as duas abas do funil em um único array de rows
-    // fj = objeto sintético com values = manual (antigo) + auto (novo) concatenados
-    const fj={values:[
-      ...(fjMan.values||[]).slice(0,1),   // cabeçalho da aba manual (tem os campos base)
-      ...(fjMan.values||[]).slice(1),      // dados da aba manual (formato vertical, texto)
-      ...(fjAuto.values||[]).slice(1),     // dados da aba auto (formato horizontal, numérico) — sem repetir cabeçalho
-    ]};
+    if(!metaRes.ok)   throw new Error(`HTTP ${metaRes.status} ao carregar Meta`);
+    if(!vendasRes.ok) throw new Error(`HTTP ${vendasRes.status} ao carregar Vendas`);
+    if(!funilRes.ok)  throw new Error(`HTTP ${funilRes.status} ao carregar Funil`);
+    const mj = await metaRes.json();
+    const vendasCSV  = await vendasRes.text();
+    const funilCSV   = await funilRes.text();
+    // Converte CSV para formato {values:[[]]} igual ao retorno da Sheets API
+    function csvToValues(csv){
+      const lines=csv.split(/\r?\n/).filter(l=>l.trim());
+      return {values:lines.map(l=>{
+        // Parser CSV simples que respeita campos com vírgula entre aspas
+        const row=[]; let cur=""; let inQ=false;
+        for(let i=0;i<l.length;i++){
+          const c=l[i];
+          if(c==='"'){inQ=!inQ;}
+          else if(c===','&&!inQ){row.push(cur.trim());cur="";}
+          else{cur+=c;}
+        }
+        row.push(cur.trim());
+        return row;
+      })};
+    }
+    const vj  = csvToValues(vendasCSV);
+    const fj  = csvToValues(funilCSV);
 
     // Meta — por dia (para abas Principal e Tráfego)
     const mD={};
@@ -426,7 +437,7 @@ async function loadData(){
       vD[d].valor += parseBRL(r["Valor do produto"]);
       vD[d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
       // Por anúncio — extrair Ad ID do campo "Ad Id" (pode ser string longa)
-      const rawAdId=r["Ad Id"]||"";
+      const rawAdId=r["Content"]||r["Ad Id"]||"";  // Base Vendas usa coluna Content
       const adId=extractAdId(rawAdId);
       if(adId){
         // Global (legado)
@@ -448,7 +459,15 @@ async function loadData(){
 
     // ── Funil — Base Vendas Completo ──────────────────────────────────────
     // Expande formato horizontal (OBs na mesma linha) e deduplica eventos webhook
-    const rawFunil = parseSheet(fj);
+    // CSV do funil contém dados de múltiplas abas — remove cabeçalhos duplicados
+    const rawFunilAll = parseSheet(fj);
+    const funilHeader = (fj.values||[])[0]||[];
+    const headerStr = funilHeader.join(",");
+    const rawFunil = rawFunilAll.filter(r=>{
+      // Remove linhas que são repetição do cabeçalho
+      const vals = funilHeader.map(h=>r[h]||"");
+      return vals.join(",") !== headerStr.replace(/[^,]*/g, s => s===s ? s : "");
+    });
     S.funilRows = deduplicateFunilRows(expandFunilRows(rawFunil));
     try{ S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
     catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
