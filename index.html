@@ -18,8 +18,26 @@ html,body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;
 .layout{display:flex;min-height:100vh}
 
 /* Sidebar */
-.sidebar{width:200px;background:var(--sidebar);display:flex;flex-direction:column;position:fixed;top:0;left:0;height:100vh;flex-shrink:0}
-.sidebar-logo{padding:18px 16px 14px;font-size:10px;font-weight:700;color:#4a3828;text-transform:uppercase;letter-spacing:.12em;border-bottom:1px solid #2a1e14}
+.sidebar{width:200px;background:var(--sidebar);display:flex;flex-direction:column;position:fixed;top:0;left:0;height:100vh;flex-shrink:0;overflow-y:auto}
+.sidebar-logo{padding:14px 16px 10px;font-size:10px;font-weight:700;color:#4a3828;text-transform:uppercase;letter-spacing:.12em;border-bottom:1px solid #2a1e14}
+
+/* Master tabs */
+.master-tabs{padding:10px 10px 6px;border-bottom:1px solid #2a1e14}
+.master-lbl{font-size:8px;font-weight:700;color:#4a3828;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;padding:0 4px}
+.master-tab{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;cursor:pointer;margin-bottom:3px;border:1px solid transparent;transition:all .15s;text-decoration:none}
+.master-tab.mt-active{background:rgba(232,98,26,0.12);border-color:rgba(232,98,26,0.3)}
+.master-tab.mt-inactive{opacity:.5;pointer-events:none;cursor:default}
+.master-tab:hover.mt-active{background:rgba(232,98,26,0.18)}
+.master-tab-name{font-size:11px;font-weight:600}
+.master-tab.mt-active .master-tab-name{color:#e8621a}
+.master-tab.mt-inactive .master-tab-name{color:#5a4838}
+.mt-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:1px}
+.master-tab.mt-active .mt-dot{background:#e8621a}
+.master-tab.mt-inactive .mt-dot{background:#3a2a1e}
+.mt-soon{font-size:8px;background:rgba(90,72,56,.4);color:#6a5848;padding:1px 5px;border-radius:3px}
+
+/* Sub-nav */
+.subnav-lbl{padding:8px 16px 4px;font-size:8px;font-weight:700;color:#3a2a1e;text-transform:uppercase;letter-spacing:.1em}
 .nav-item{display:flex;align-items:center;padding:11px 16px;font-size:12px;color:#5a4838;cursor:pointer;border-left:3px solid transparent;gap:8px;transition:color .15s}
 .nav-item:hover{color:#8a7060}
 .nav-item.active{color:var(--accent);background:var(--accent-bg);border-left-color:var(--accent);font-weight:600}
@@ -109,6 +127,28 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer}
 <div class="layout">
   <nav class="sidebar">
     <div class="sidebar-logo">Dashboard</div>
+
+    <!-- Master tabs — seleção de funil -->
+    <div class="master-tabs">
+      <div class="master-lbl">Funis</div>
+      <a class="master-tab mt-active" onclick="switchFunil('manual')">
+        <div>
+          <div class="master-tab-name">Manual Definitivo</div>
+          <div style="font-size:9px;color:#e8621a;margin-top:1px" id="mt-manual-sub">ativo</div>
+        </div>
+        <div class="mt-dot"></div>
+      </a>
+      <a class="master-tab mt-inactive" title="Em breve — configure os dados do funil">
+        <div>
+          <div class="master-tab-name">Mapa da Casa</div>
+          <div style="font-size:9px;color:#5a4838;margin-top:1px">em breve</div>
+        </div>
+        <span class="mt-soon">🔒</span>
+      </a>
+    </div>
+
+    <!-- Sub-nav do funil ativo -->
+    <div class="subnav-lbl" id="subnav-lbl">Manual Definitivo</div>
     <a class="nav-item active" onclick="navTo('principal')">Principal</a>
     <a class="nav-item" onclick="navTo('trafego')">Métricas tráfego</a>
     <a class="nav-item" onclick="navTo('funil')">Métricas do funil</a>
@@ -360,7 +400,29 @@ async function loadData(){
     try{ S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
     catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
 
-    S.updated=new Date(Date.now()-3*60*60*1000).toLocaleTimeString("pt-BR");
+    // "Atualizado em" = data/hora da última venda Paga do Manual Definitivo
+    // Pega de S.funilRows que já foi expandido e deduplicado
+    let lastManualSale = "";
+    for(const r of S.funilRows){
+      const nm=(r["Nome do produto"]||"").toUpperCase();
+      if(!nm.includes("MANUAL DEFINITIVO")) continue;
+      const st=normalizeStatus((r["Status da compra"]||"").trim());
+      if(st!=="Paga") continue;
+      // data/hora original (antes do toISO) — usa campo bruto
+      const raw=(r["Data da compra"]||r["Data"]||"").trim();
+      if(raw > lastManualSale) lastManualSale=raw;
+    }
+    // Formata para exibição: "dd/mm/yyyy HH:MM" ou só a data se não tiver hora
+    function fmtUpdated(raw){
+      if(!raw) return "—";
+      const parts=raw.split(" ");
+      const datePart=parts[0]; // dd/mm/yyyy
+      const timePart=parts[1]||"";
+      const dp=datePart.split("/");
+      const dateStr=dp.length===3?`${dp[0]}/${dp[1]}/${dp[2]}`:"";
+      return timePart ? `${dateStr} ${timePart.slice(0,5)}` : dateStr;
+    }
+    S.updated=fmtUpdated(lastManualSale);
     S.firstLoad=false;
     clearTimeout(_t);
   } catch(e){
@@ -443,6 +505,25 @@ function getDayMetrics(iso){
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
+function switchFunil(id){
+  // Por enquanto só Manual está disponível — Mapa virá quando os dados forem configurados
+  if(id==='manual'){
+    document.querySelectorAll('.master-tab').forEach(t=>{
+      t.classList.remove('mt-active');
+      t.classList.add('mt-inactive');
+      t.style.pointerEvents='none';
+      t.style.opacity='.5';
+    });
+    const manualTab=document.querySelector('.master-tab');
+    manualTab.classList.remove('mt-inactive');
+    manualTab.classList.add('mt-active');
+    manualTab.style.pointerEvents='';
+    manualTab.style.opacity='';
+    document.getElementById('subnav-lbl').textContent='Manual Definitivo';
+    navTo(S.currentPage);
+  }
+}
+
 function navTo(page){
   S.currentPage=page;
   document.querySelectorAll(".nav-item:not(.disabled)").forEach(el=>{
