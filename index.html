@@ -318,6 +318,34 @@ function extractAdId(raw){
 }
 
 // ── Load data ──────────────────────────────────────────────────────────────
+// Busca uma aba em blocos de 5000 linhas para evitar timeout em abas grandes
+async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=5000){
+  const base=`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/`;
+  const enc=encodeURIComponent(tabName);
+  // Primeiro busca só o cabeçalho para saber as colunas
+  const headRes=await fetch(`${base}${enc}!A1:ZZ1?key=${apiKey}`);
+  if(!headRes.ok) throw new Error(`HTTP ${headRes.status} ao carregar ${tabName}`);
+  const headJ=await headRes.json();
+  const header=(headJ.values||[])[0]||[];
+
+  // Busca dados em blocos
+  let allRows=[header];
+  let startRow=2;
+  while(true){
+    const endRow=startRow+blockSize-1;
+    const range=`${enc}!A${startRow}:ZZ${endRow}`;
+    const res=await fetch(`${base}${range}?key=${apiKey}`);
+    if(!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${tabName} (linha ${startRow})`);
+    const j=await res.json();
+    const rows=j.values||[];
+    if(!rows.length) break;
+    allRows=[...allRows,...rows];
+    if(rows.length<blockSize) break;
+    startRow+=blockSize;
+  }
+  return {values:allRows};
+}
+
 async function loadData(){
   if(IS_FILE){ S.firstLoad=false;render();return; }
   S.loading=true;S.error=null;
@@ -326,16 +354,16 @@ async function loadData(){
   const _t=setTimeout(()=>{
     if(S.firstLoad){S.firstLoad=false;S.loading=false;
       S.error="Tempo esgotado. Verifique a conexão e tente atualizar.";render();}
-  },25000);
+  },90000);
   try {
-    const [mr,vr,fauto,fman]=await Promise.all([
-      fetch(URL_META),fetch(URL_VENDAS),fetch(URL_FUNIL_AUTO),fetch(URL_FUNIL_MANUAL)
+    // Meta: pequena — fetch simples
+    // Vendas e Funil manual: grandes — fetch paginado em blocos de 5000
+    const [mj,vj,fjAuto,fjMan]=await Promise.all([
+      fetch(URL_META).then(r=>{ if(!r.ok)throw new Error(`HTTP ${r.status} ao carregar Meta`); return r.json(); }),
+      fetchSheetPaged(SHEET_VENDAS,   "📥 Base Vendas",                          API_KEY),
+      fetchSheetPaged(SHEET_FUNIL,    "📥 Base Vendas - Completo",               API_KEY, 2000),
+      fetchSheetPaged(SHEET_FUNIL,    "📥 Base Vendas - Completo - manual",      API_KEY),
     ]);
-    if(!mr.ok)   throw new Error(`HTTP ${mr.status} ao carregar Meta`);
-    if(!vr.ok)   throw new Error(`HTTP ${vr.status} ao carregar Vendas`);
-    if(!fauto.ok)throw new Error(`HTTP ${fauto.status} ao carregar Funil (auto)`);
-    if(!fman.ok) throw new Error(`HTTP ${fman.status} ao carregar Funil (manual)`);
-    const [mj,vj,fjAuto,fjMan]=await Promise.all([mr.json(),vr.json(),fauto.json(),fman.json()]);
     // Combina as duas abas do funil em um único array de rows
     // fj = objeto sintético com values = manual (antigo) + auto (novo) concatenados
     const fj={values:[
