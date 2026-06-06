@@ -422,7 +422,9 @@ async function loadData(){
     }
     let lastManualSale="";
     let lastManualSaleISO="";
-    for(const r of S.funilRows){
+    // Percorre as linhas RAW (antes do expandFunilRows que usa toISO)
+    // para preservar o horário completo
+    for(const r of rawFunil){
       const nm=(r["Nome do produto"]||"").toUpperCase();
       if(!nm.includes("MANUAL DEFINITIVO")) continue;
       const st=normalizeStatus((r["Status da compra"]||"").trim());
