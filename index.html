@@ -401,26 +401,35 @@ async function loadData(){
     catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
 
     // "Atualizado em" = data/hora da última venda Paga do Manual Definitivo
-    // Pega de S.funilRows que já foi expandido e deduplicado
-    let lastManualSale = "";
+    // Compara em ISO para evitar bug de ordenação de string dd/mm/yyyy
+    function fmtUpdated(raw){
+      if(!raw) return "—";
+      const parts=raw.trim().split(" ");
+      const datePart=parts[0];
+      const timePart=parts[1]||"";
+      const dp=datePart.split("/");
+      const dateStr=dp.length===3?`${dp[0]}/${dp[1]}/${dp[2]}`:"";
+      return timePart ? `${dateStr} ${timePart.slice(0,5)}` : dateStr;
+    }
+    function rawToISO(raw){
+      // converte dd/mm/yyyy HH:MM:SS ou yyyy-mm-dd para yyyy-mm-ddTHH:MM para comparação
+      if(!raw) return "";
+      const parts=raw.trim().split(" ");
+      const d=parts[0]; const t=parts[1]||"00:00:00";
+      const dp=d.split("/");
+      if(dp.length===3) return `${dp[2]}-${dp[1].padStart(2,"0")}-${dp[0].padStart(2,"0")}T${t}`;
+      return d+"T"+t; // já em ISO
+    }
+    let lastManualSale="";
+    let lastManualSaleISO="";
     for(const r of S.funilRows){
       const nm=(r["Nome do produto"]||"").toUpperCase();
       if(!nm.includes("MANUAL DEFINITIVO")) continue;
       const st=normalizeStatus((r["Status da compra"]||"").trim());
       if(st!=="Paga") continue;
-      // data/hora original (antes do toISO) — usa campo bruto
       const raw=(r["Data da compra"]||r["Data"]||"").trim();
-      if(raw > lastManualSale) lastManualSale=raw;
-    }
-    // Formata para exibição: "dd/mm/yyyy HH:MM" ou só a data se não tiver hora
-    function fmtUpdated(raw){
-      if(!raw) return "—";
-      const parts=raw.split(" ");
-      const datePart=parts[0]; // dd/mm/yyyy
-      const timePart=parts[1]||"";
-      const dp=datePart.split("/");
-      const dateStr=dp.length===3?`${dp[0]}/${dp[1]}/${dp[2]}`:"";
-      return timePart ? `${dateStr} ${timePart.slice(0,5)}` : dateStr;
+      const iso=rawToISO(raw);
+      if(iso > lastManualSaleISO){ lastManualSaleISO=iso; lastManualSale=raw; }
     }
     S.updated=fmtUpdated(lastManualSale);
     S.firstLoad=false;
