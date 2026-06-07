@@ -310,6 +310,27 @@ function extractAdId(raw){
   return m ? m[0] : null;
 }
 
+// ── Mapeamento de campos da Base Meta (EN ↔ PT) ───────────────────────────
+// A Sheets API às vezes retorna cabeçalhos traduzidos para PT mesmo com a planilha em EN.
+// Este helper resolve o valor correto tentando o nome EN e o equivalente PT.
+const META_FIELD_MAP = {
+  "Date":                                                    ["Data","Date"],
+  "Spend (Cost, Amount Spent)":                              ["Gastar (Custo, Valor Gasto)","Spend (Cost, Amount Spent)"],
+  "Action Link Clicks":                                      ["Cliques em links de ação","Action Link Clicks"],
+  "Impressions":                                             ["Impressões","Impressions"],
+  "Ad ID":                                                   ["ID do anúncio","Ad ID","Ad Id"],
+  "Ad Name":                                                 ["Nome do anúncio","Ad Name"],
+  "Instagram Permalink URL":                                 ["URL permanente do Instagram","Instagram Permalink URL"],
+  "Action Landing Page View":                                ["Visualização da página de destino da ação","Action Landing Page View"],
+  "Action FB Pixel Initiate Checkout (Offsite Conversion)":  ["Ação do Pixel do Facebook: Iniciar finalização da compra (conversão fora do site)","Action FB Pixel Initiate Checkout (Offsite Conversion)"],
+  "Action Omni View Content":                                ["Ação de visualização de conteúdo omni","Action Omni View Content"],
+};
+function rMeta(row, key){
+  const aliases = META_FIELD_MAP[key] || [key];
+  for(const a of aliases){ if(row[a] !== undefined) return row[a]; }
+  return "";
+}
+
 // ── Load data ──────────────────────────────────────────────────────────────
 // Busca uma aba em blocos de 5000 linhas para evitar timeout em abas grandes
 async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=5000){
@@ -361,34 +382,34 @@ async function loadData(){
     const mByAd={};
     const mByAdByDate={};  // {advCode: {date: {spend,clicks,impressions}}}
     for(const r of parseSheet(mj)){
-      const d=toISO(r["Date"]);if(!d)continue;
+      const d=toISO(rMeta(r,"Date"));if(!d)continue;
       // Por dia
       if(!mD[d])mD[d]={spend:0,clicks:0,impressions:0,landingViews:0,checkouts:0,purchases:0,viewContent:0};
-      mD[d].spend        += parseBRL(r["Spend (Cost, Amount Spent)"]);
-      mD[d].clicks       += parseInt(r["Action Link Clicks"]||0)||0;
-      mD[d].impressions  += parseInt(r["Impressions"]||0)||0;
-      mD[d].landingViews += parseInt(r["Action Landing Page View"]||0)||0;
-      mD[d].checkouts    += parseInt(r["Action FB Pixel Initiate Checkout (Offsite Conversion)"]||0)||0;
-      mD[d].viewContent  += parseInt(r["Action Omni View Content"]||0)||0;
+      mD[d].spend        += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
+      mD[d].clicks       += parseInt(rMeta(r,"Action Link Clicks")||0)||0;
+      mD[d].impressions  += parseInt(rMeta(r,"Impressions")||0)||0;
+      mD[d].landingViews += parseInt(rMeta(r,"Action Landing Page View")||0)||0;
+      mD[d].checkouts    += parseInt(rMeta(r,"Action FB Pixel Initiate Checkout (Offsite Conversion)")||0)||0;
+      mD[d].viewContent  += parseInt(rMeta(r,"Action Omni View Content")||0)||0;
       // Por anúncio
-      const adId=r["Ad ID"]||r["Ad Id"]||"";
-      const adName=r["Ad Name"]||"";
-      const igUrl=r["Instagram Permalink URL"]||"";
+      const adId=rMeta(r,"Ad ID")||"";
+      const adName=rMeta(r,"Ad Name")||"";
+      const igUrl=rMeta(r,"Instagram Permalink URL")||"";
       const advCode=extractAdvCode(adName);
       if(advCode){
         if(!mByAd[advCode])mByAd[advCode]={advCode,adIds:new Set(),spend:0,clicks:0,impressions:0,igUrl:"",dates:new Set()};
         if(adId) mByAd[advCode].adIds.add(adId);
-        mByAd[advCode].spend       += parseBRL(r["Spend (Cost, Amount Spent)"]);
-        mByAd[advCode].clicks      += parseInt(r["Action Link Clicks"]||0)||0;
-        mByAd[advCode].impressions += parseInt(r["Impressions"]||0)||0;
+        mByAd[advCode].spend       += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
+        mByAd[advCode].clicks      += parseInt(rMeta(r,"Action Link Clicks")||0)||0;
+        mByAd[advCode].impressions += parseInt(rMeta(r,"Impressions")||0)||0;
         mByAd[advCode].dates.add(d);
         if(igUrl && !mByAd[advCode].igUrl) mByAd[advCode].igUrl=igUrl;
         // Por data (para filtrar por período na aba Anúncios)
         if(!mByAdByDate[advCode]) mByAdByDate[advCode]={};
         if(!mByAdByDate[advCode][d]) mByAdByDate[advCode][d]={spend:0,clicks:0,impressions:0,adIds:new Set(),igUrl:""};
-        mByAdByDate[advCode][d].spend       += parseBRL(r["Spend (Cost, Amount Spent)"]);
-        mByAdByDate[advCode][d].clicks      += parseInt(r["Action Link Clicks"]||0)||0;
-        mByAdByDate[advCode][d].impressions += parseInt(r["Impressions"]||0)||0;
+        mByAdByDate[advCode][d].spend       += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
+        mByAdByDate[advCode][d].clicks      += parseInt(rMeta(r,"Action Link Clicks")||0)||0;
+        mByAdByDate[advCode][d].impressions += parseInt(rMeta(r,"Impressions")||0)||0;
         if(adId) mByAdByDate[advCode][d].adIds.add(adId);
         if(igUrl && !mByAdByDate[advCode][d].igUrl) mByAdByDate[advCode][d].igUrl=igUrl;
       }
