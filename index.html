@@ -213,7 +213,7 @@ const S = {
   metaByAd:{},   // {adId: {name, date->row, spend, clicks, impressions, igUrl}}
   metaByAdByDate:{}, // {advCode: {date: {spend,clicks,impressions}}}
   vendasByAd:{}, // {adId: {qtd, valor, taxa}}
-  loading:false, error:null, updated:null, firstLoad:true,
+  loading:false, errors:{}, updated:null, firstLoad:true,
   // Principal
   startDate:nDaysAgoISO(29), endDate:todayISO(), activeQuick:"30d",
   // Tráfego
@@ -362,28 +362,51 @@ async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=5000){
 
 async function loadData(){
   if(IS_FILE){ S.firstLoad=false;render();return; }
-  S.loading=true;S.error=null;
+  S.loading=true;S.errors={};
   if(!S.firstLoad) render();
-  // Timeout de segurança: se demorar >25s libera a tela
-  const _t=setTimeout(()=>{
-    if(S.firstLoad){S.firstLoad=false;S.loading=false;
-      S.error="Tempo esgotado. Verifique a conexão e tente atualizar.";render();}
-  },90000);
-  try {
-    const [mr,vr,fr]=await Promise.all([fetch(URL_META),fetch(URL_VENDAS),fetch(URL_FUNIL)]);
-    if(!mr.ok)throw new Error(`HTTP ${mr.status} ao carregar Meta`);
-    if(!vr.ok)throw new Error(`HTTP ${vr.status} ao carregar Vendas`);
-    if(!fr.ok)throw new Error(`HTTP ${fr.status} ao carregar Funil`);
-    const [mj,vj,fj]=await Promise.all([mr.json(),vr.json(),fr.json()]);
 
-    // Meta — por dia (para abas Principal e Tráfego)
-    const mD={};
-    // Meta — por Ad ID (para aba Anúncios)
-    const mByAd={};
-    const mByAdByDate={};  // {advCode: {date: {spend,clicks,impressions}}}
-    for(const r of parseSheet(mj)){
+  // Helpers internos
+  function fmtUpdated(raw){
+    if(!raw) return "—";
+    const parts=raw.trim().split(" ");
+    const datePart=parts[0]; const timePart=parts[1]||"";
+    const dp=datePart.split("/");
+    const dateStr=dp.length===3?`${dp[0]}/${dp[1]}/${dp[2]}`:"";
+    return timePart ? `${dateStr} ${timePart.slice(0,5)}` : dateStr;
+  }
+  function rawToISO(raw){
+    if(!raw) return "";
+    const parts=raw.trim().split(" ");
+    const d=parts[0]; const t=parts[1]||"00:00:00";
+    const dp=d.split("/");
+    if(dp.length===3) return `${dp[2]}-${dp[1].padStart(2,"0")}-${dp[0].padStart(2,"0")}T${t}`;
+    return d+"T"+t;
+  }
+
+  // Fetch seguro: retorna {ok, json, error}
+  async function safeFetch(url, label){
+    try{
+      const r=await fetch(url);
+      if(!r.ok) return {ok:false, error:`HTTP ${r.status} — ${label}`};
+      const j=await r.json();
+      return {ok:true, json:j};
+    } catch(e){
+      return {ok:false, error:`Falha de rede — ${label}: ${e.message}`};
+    }
+  }
+
+  // Dispara os 3 fetches em paralelo, independentemente
+  const [resMeta, resVendas, resFunil] = await Promise.all([
+    safeFetch(URL_META,   "Base Meta (investimento)"),
+    safeFetch(URL_VENDAS, "Base Vendas"),
+    safeFetch(URL_FUNIL,  "Base Vendas - Completo (funil)"),
+  ]);
+
+  // ── Processa Meta ─────────────────────────────────────────────────────────
+  if(resMeta.ok){
+    const mD={}, mByAd={}, mByAdByDate={};
+    for(const r of parseSheet(resMeta.json)){
       const d=toISO(rMeta(r,"Date"));if(!d)continue;
-      // Por dia
       if(!mD[d])mD[d]={spend:0,clicks:0,impressions:0,landingViews:0,checkouts:0,purchases:0,viewContent:0};
       mD[d].spend        += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
       mD[d].clicks       += parseInt(rMeta(r,"Action Link Clicks")||0)||0;
@@ -391,7 +414,6 @@ async function loadData(){
       mD[d].landingViews += parseInt(rMeta(r,"Action Landing Page View")||0)||0;
       mD[d].checkouts    += parseInt(rMeta(r,"Action FB Pixel Initiate Checkout (Offsite Conversion)")||0)||0;
       mD[d].viewContent  += parseInt(rMeta(r,"Action Omni View Content")||0)||0;
-      // Por anúncio
       const adId=rMeta(r,"Ad ID")||"";
       const adName=rMeta(r,"Ad Name")||"";
       const igUrl=rMeta(r,"Instagram Permalink URL")||"";
@@ -404,7 +426,6 @@ async function loadData(){
         mByAd[advCode].impressions += parseInt(rMeta(r,"Impressions")||0)||0;
         mByAd[advCode].dates.add(d);
         if(igUrl && !mByAd[advCode].igUrl) mByAd[advCode].igUrl=igUrl;
-        // Por data (para filtrar por período na aba Anúncios)
         if(!mByAdByDate[advCode]) mByAdByDate[advCode]={};
         if(!mByAdByDate[advCode][d]) mByAdByDate[advCode][d]={spend:0,clicks:0,impressions:0,adIds:new Set(),igUrl:""};
         mByAdByDate[advCode][d].spend       += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
@@ -414,31 +435,28 @@ async function loadData(){
         if(igUrl && !mByAdByDate[advCode][d].igUrl) mByAdByDate[advCode][d].igUrl=igUrl;
       }
     }
-    S.meta=mD;
-    S.metaByAd=mByAd;
-    S.metaByAdByDate=mByAdByDate;
+    S.meta=mD; S.metaByAd=mByAd; S.metaByAdByDate=mByAdByDate;
+  } else {
+    S.errors.meta=resMeta.error;
+    console.error("Meta fetch error:", resMeta.error);
+  }
 
-    // Vendas — por dia (Principal/Tráfego) e por Ad ID (Anúncios)
-    const vD={};
-    const vByAd={};
-    const vByAdDate={};  // {adId: {date: {qtd,valor,taxa}}}
-    for(const r of parseSheet(vj)){
+  // ── Processa Vendas ───────────────────────────────────────────────────────
+  if(resVendas.ok){
+    const vD={}, vByAd={}, vByAdDate={};
+    for(const r of parseSheet(resVendas.json)){
       const d=toISO(r["Data correta"]);if(!d)continue;
-      // Por dia
       if(!vD[d])vD[d]={qtd:0,valor:0,taxa:0};
       vD[d].qtd   += 1;
       vD[d].valor += parseBRL(r["Valor do produto"]);
       vD[d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
-      // Por anúncio — extrair Ad ID do campo "Ad Id" (pode ser string longa)
       const rawAdId=r["Ad Id"]||"";
       const adId=extractAdId(rawAdId);
       if(adId){
-        // Global (legado)
         if(!vByAd[adId])vByAd[adId]={qtd:0,valor:0,taxa:0};
         vByAd[adId].qtd   += 1;
         vByAd[adId].valor += parseBRL(r["Valor do produto"]);
         vByAd[adId].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
-        // Por data (para filtrar por período na aba Anúncios)
         if(!vByAdDate[adId]) vByAdDate[adId]={};
         if(!vByAdDate[adId][d]) vByAdDate[adId][d]={qtd:0,valor:0,taxa:0};
         vByAdDate[adId][d].qtd   += 1;
@@ -446,41 +464,20 @@ async function loadData(){
         vByAdDate[adId][d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
       }
     }
-    S.vendas=vD;
-    S.vendasByAd=vByAd;
-    S.vendasByAdDate=vByAdDate;
+    S.vendas=vD; S.vendasByAd=vByAd; S.vendasByAdDate=vByAdDate;
+  } else {
+    S.errors.vendas=resVendas.error;
+    console.error("Vendas fetch error:", resVendas.error);
+  }
 
-    // ── Funil — Base Vendas Completo ──────────────────────────────────────
-    // Expande formato horizontal (OBs na mesma linha) e deduplica eventos webhook
-    const rawFunil = parseSheet(fj);
-    S.funilRows = deduplicateFunilRows(expandFunilRows(rawFunil));
-    try{ S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
+  // ── Processa Funil ────────────────────────────────────────────────────────
+  if(resFunil.ok){
+    const rawFunil=parseSheet(resFunil.json);
+    S.funilRows=deduplicateFunilRows(expandFunilRows(rawFunil));
+    try{ S.funil=buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
     catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
-
-    // "Atualizado em" = data/hora da última venda Paga do Manual Definitivo
-    // Compara em ISO para evitar bug de ordenação de string dd/mm/yyyy
-    function fmtUpdated(raw){
-      if(!raw) return "—";
-      const parts=raw.trim().split(" ");
-      const datePart=parts[0];
-      const timePart=parts[1]||"";
-      const dp=datePart.split("/");
-      const dateStr=dp.length===3?`${dp[0]}/${dp[1]}/${dp[2]}`:"";
-      return timePart ? `${dateStr} ${timePart.slice(0,5)}` : dateStr;
-    }
-    function rawToISO(raw){
-      // converte dd/mm/yyyy HH:MM:SS ou yyyy-mm-dd para yyyy-mm-ddTHH:MM para comparação
-      if(!raw) return "";
-      const parts=raw.trim().split(" ");
-      const d=parts[0]; const t=parts[1]||"00:00:00";
-      const dp=d.split("/");
-      if(dp.length===3) return `${dp[2]}-${dp[1].padStart(2,"0")}-${dp[0].padStart(2,"0")}T${t}`;
-      return d+"T"+t; // já em ISO
-    }
-    let lastManualSale="";
-    let lastManualSaleISO="";
-    // Percorre as linhas RAW (antes do expandFunilRows que usa toISO)
-    // para preservar o horário completo
+    // "Atualizado em" — última venda Paga do Manual
+    let lastManualSale="", lastManualSaleISO="";
     for(const r of rawFunil){
       const nm=(r["Nome do produto"]||"").toUpperCase();
       if(!nm.includes("MANUAL DEFINITIVO")) continue;
@@ -488,17 +485,15 @@ async function loadData(){
       if(st!=="Paga") continue;
       const raw=(r["Data da compra"]||r["Data"]||"").trim();
       const iso=rawToISO(raw);
-      if(iso > lastManualSaleISO){ lastManualSaleISO=iso; lastManualSale=raw; }
+      if(iso>lastManualSaleISO){ lastManualSaleISO=iso; lastManualSale=raw; }
     }
     S.updated=fmtUpdated(lastManualSale);
-    S.firstLoad=false;
-    clearTimeout(_t);
-  } catch(e){
-    clearTimeout(_t);
-    S.error="Erro ao carregar: "+e.message;
-    S.firstLoad=false;
-    console.error("loadData error:",e);
+  } else {
+    S.errors.funil=resFunil.error;
+    console.error("Funil fetch error:", resFunil.error);
   }
+
+  S.firstLoad=false;
   S.loading=false;
   render();
 }
@@ -814,7 +809,11 @@ function kpiCard(lbl,val,sub,color,small=false){
   </div>`;
 }
 
-function statusLegend(){
+function errorsBar(){
+  const errs=Object.values(S.errors||{});
+  if(!errs.length) return "";
+  return errs.map(e=>`<div class="err">⚠️ ${e}</div>`).join("");
+}
   return `<div class="status-legend">
     <span class="sl"><span class="sl-dot" style="background:#1a7a4a"></span>Dentro da meta</span>
     <span class="sl"><span class="sl-dot" style="background:#c07800"></span>Até 10% fora</span>
@@ -840,7 +839,7 @@ function renderPrincipal(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+    ${errorsBar()}
     ${periodBar(S.startDate,S.endDate,S.activeQuick,"")}
     <div class="g3" style="margin-bottom:12px">
       ${kpiCard("Investimento",fBRL(tot.spend),`${tot.vendas} vendas · ${daily.length} dias`,"#1c1410")}
@@ -991,7 +990,7 @@ function renderTrafego(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+    ${errorsBar()}
 
     <div class="section-lbl">Hoje — ${fDateBR(today)}</div>
     <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-bottom:18px">
@@ -1114,7 +1113,7 @@ function renderAnuncios(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+    ${errorsBar()}
 
     ${periodBar(S.aStartDate,S.aEndDate,S.aActiveQuick,"a")}
 
@@ -1451,18 +1450,24 @@ function buildFunilData(rows, start, end){
     ltv:  totalFat/manualCount,
     lucro: totalFat - totalTaxa - (totalSpend*TAXA_IMPOSTO),
     ascensao: manualCount>0 ? ((manualCount - (manualCount - Object.keys(counts).filter(k=>k!=="manual"&&counts[k]>0).reduce((a,k)=>Math.min(a,counts.manual),counts.manual)))/manualCount)*100 : 0,
-    // Taxa de ascensão: % de compradores únicos do Manual que compraram planLucro e/ou curso
+    // Taxa de ascensão: % de compradores únicos do Manual (no período) que compraram planLucro e/ou curso
     taxaAscensao: (function(){
-      if(!manualCount) return 0;
-      let cnt=0;
+      let total=0, cnt=0;
       for(const [,buyer] of buyers){
         const paid=buyer.products.filter(p=>p.status==="Paga");
-        const mp=paid.filter(p=>p.id==="manual").sort((a,b)=>a.date.localeCompare(b.date))[0];
+        // Compra do Manual dentro do período filtrado
+        const mp=paid.filter(p=>{
+          if(p.id!=="manual") return false;
+          if(start && p.date<start) return false;
+          if(end   && p.date>end)   return false;
+          return true;
+        }).sort((a,b)=>a.date.localeCompare(b.date))[0];
         if(!mp) continue;
+        total++;
         const ascendeu=paid.some(p=>(p.id==="planLucro"||p.id==="curso")&&p.date>=mp.date);
         if(ascendeu) cnt++;
       }
-      return (cnt/manualCount)*100;
+      return total>0 ? (cnt/total)*100 : 0;
     })(),
     statusCounts, statusVals, statusByProd, buyers,
   };
@@ -1575,7 +1580,7 @@ function renderFunil(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
+    ${errorsBar()}
 
     <div class="period-wrap">
       <div class="period-top">
