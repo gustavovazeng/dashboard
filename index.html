@@ -167,7 +167,8 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer}
 const IS_FILE = location.protocol === "file:";
 const SHEET_ID = "1WnzVmGkeT-s9RW3Kop1MdY8NmkNoGNk7CDDa9YvYw90";
 const API_KEY  = "AIzaSyDxMp-u0RUfy-Xv0jICULZbJGpuAUxqQPI";
-const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("Ⓜ️ Base Meta")}?key=${API_KEY}`;
+const SHEET_ID_META = "1gaMsxGBZ75oVeDJYQo0vdrW6PGoPC4DuxBmkbJ_Yf9s";
+const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID_META}/values/${encodeURIComponent("Base Meta")}?key=${API_KEY}`;
 const URL_VENDAS = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("📥 Base Vendas")}?key=${API_KEY}`;
 const URL_FUNIL  = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("📥 Base Vendas - Completo")}?key=${API_KEY}`;
 
