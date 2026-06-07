@@ -165,15 +165,11 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer}
 
 <script>
 const IS_FILE = location.protocol === "file:";
-const API_KEY = "AIzaSyDxMp-u0RUfy-Xv0jICULZbJGpuAUxqQPI";
-
-// Base Meta — API JSON (rápida, poucos dados)
-const SHEET_META = "1gaMsxGBZ75oVeDJYQo0vdrW6PGoPC4DuxBmkbJ_Yf9s";
-const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_META}/values/${encodeURIComponent("Base Meta")}?key=${API_KEY}`;
-
-// Base Vendas e Funil — CSV publicado (muito mais rápido para abas grandes)
-const URL_VENDAS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSO_yG7nRSA5yxdSy6UMRdG9--MoVFqSPjujBsgQ8H0NUtinq2Gb_zyGzRPp_f5h3p9AhfOgQpHfTmv/pub?output=csv";
-const URL_FUNIL  = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRc3gLEev3ZFLYl6y5ZrxsIl163VG2JoglN1tMurbUX6tOekhCBtfGGqLepyPL2VxiooNV8je3cG8Lv/pub?output=csv";
+const SHEET_ID = "1WnzVmGkeT-s9RW3Kop1MdY8NmkNoGNk7CDDa9YvYw90";
+const API_KEY  = "AIzaSyDxMp-u0RUfy-Xv0jICULZbJGpuAUxqQPI";
+const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("Ⓜ️ Base Meta")}?key=${API_KEY}`;
+const URL_VENDAS = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("📥 Base Vendas")}?key=${API_KEY}`;
+const URL_FUNIL  = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("📥 Base Vendas - Completo")}?key=${API_KEY}`;
 
 // Mapeamento do funil — ordem importa
 const FUNIL_PRODUTOS = [
@@ -352,36 +348,11 @@ async function loadData(){
       S.error="Tempo esgotado. Verifique a conexão e tente atualizar.";render();}
   },90000);
   try {
-    // Meta: API JSON | Vendas + Funil: CSV publicado (mais rápido)
-    const [metaRes,vendasRes,funilRes]=await Promise.all([
-      fetch(URL_META),
-      fetch(URL_VENDAS),
-      fetch(URL_FUNIL),
-    ]);
-    if(!metaRes.ok)   throw new Error(`HTTP ${metaRes.status} ao carregar Meta`);
-    if(!vendasRes.ok) throw new Error(`HTTP ${vendasRes.status} ao carregar Vendas`);
-    if(!funilRes.ok)  throw new Error(`HTTP ${funilRes.status} ao carregar Funil`);
-    const mj = await metaRes.json();
-    const vendasCSV  = await vendasRes.text();
-    const funilCSV   = await funilRes.text();
-    // Converte CSV para formato {values:[[]]} igual ao retorno da Sheets API
-    function csvToValues(csv){
-      const lines=csv.split(/\r?\n/).filter(l=>l.trim());
-      return {values:lines.map(l=>{
-        // Parser CSV simples que respeita campos com vírgula entre aspas
-        const row=[]; let cur=""; let inQ=false;
-        for(let i=0;i<l.length;i++){
-          const c=l[i];
-          if(c==='"'){inQ=!inQ;}
-          else if(c===','&&!inQ){row.push(cur.trim());cur="";}
-          else{cur+=c;}
-        }
-        row.push(cur.trim());
-        return row;
-      })};
-    }
-    const vj  = csvToValues(vendasCSV);
-    const fj  = csvToValues(funilCSV);
+    const [mr,vr,fr]=await Promise.all([fetch(URL_META),fetch(URL_VENDAS),fetch(URL_FUNIL)]);
+    if(!mr.ok)throw new Error(`HTTP ${mr.status} ao carregar Meta`);
+    if(!vr.ok)throw new Error(`HTTP ${vr.status} ao carregar Vendas`);
+    if(!fr.ok)throw new Error(`HTTP ${fr.status} ao carregar Funil`);
+    const [mj,vj,fj]=await Promise.all([mr.json(),vr.json(),fr.json()]);
 
     // Meta — por dia (para abas Principal e Tráfego)
     const mD={};
@@ -437,7 +408,7 @@ async function loadData(){
       vD[d].valor += parseBRL(r["Valor do produto"]);
       vD[d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
       // Por anúncio — extrair Ad ID do campo "Ad Id" (pode ser string longa)
-      const rawAdId=r["Content"]||r["Ad Id"]||"";  // Base Vendas usa coluna Content
+      const rawAdId=r["Ad Id"]||"";
       const adId=extractAdId(rawAdId);
       if(adId){
         // Global (legado)
@@ -459,15 +430,7 @@ async function loadData(){
 
     // ── Funil — Base Vendas Completo ──────────────────────────────────────
     // Expande formato horizontal (OBs na mesma linha) e deduplica eventos webhook
-    // CSV do funil contém dados de múltiplas abas — remove cabeçalhos duplicados
-    const rawFunilAll = parseSheet(fj);
-    const funilHeader = (fj.values||[])[0]||[];
-    const headerStr = funilHeader.join(",");
-    const rawFunil = rawFunilAll.filter(r=>{
-      // Remove linhas que são repetição do cabeçalho
-      const vals = funilHeader.map(h=>r[h]||"");
-      return vals.join(",") !== headerStr.replace(/[^,]*/g, s => s===s ? s : "");
-    });
+    const rawFunil = parseSheet(fj);
     S.funilRows = deduplicateFunilRows(expandFunilRows(rawFunil));
     try{ S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
     catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
