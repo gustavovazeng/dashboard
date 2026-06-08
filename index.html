@@ -365,6 +365,15 @@ async function loadData(){
   S.loading=true;S.errors={};
   if(!S.firstLoad) render();
 
+  // Timeout de segurança: se Promise.all travar além de 25s, libera a tela
+  const safetyTimer=setTimeout(()=>{
+    if(S.firstLoad){
+      S.firstLoad=false;S.loading=false;
+      S.errors.timeout="Tempo esgotado (25s). Verifique a conexão e tente atualizar.";
+      render();
+    }
+  },25000);
+
   // Helpers internos
   function fmtUpdated(raw){
     if(!raw) return "—";
@@ -383,15 +392,20 @@ async function loadData(){
     return d+"T"+t;
   }
 
-  // Fetch seguro: retorna {ok, json, error}
+  // Fetch seguro com timeout de 20s: retorna {ok, json, error}
   async function safeFetch(url, label){
+    const controller=new AbortController();
+    const tid=setTimeout(()=>controller.abort(),20000);
     try{
-      const r=await fetch(url);
+      const r=await fetch(url,{signal:controller.signal});
+      clearTimeout(tid);
       if(!r.ok) return {ok:false, error:`HTTP ${r.status} — ${label}`};
       const j=await r.json();
       return {ok:true, json:j};
     } catch(e){
-      return {ok:false, error:`Falha de rede — ${label}: ${e.message}`};
+      clearTimeout(tid);
+      const msg=e.name==="AbortError"?"Timeout (20s)":"Falha de rede";
+      return {ok:false, error:`${msg} — ${label}`};
     }
   }
 
@@ -493,6 +507,7 @@ async function loadData(){
     console.error("Funil fetch error:", resFunil.error);
   }
 
+  clearTimeout(safetyTimer);
   S.firstLoad=false;
   S.loading=false;
   render();
@@ -814,6 +829,8 @@ function errorsBar(){
   if(!errs.length) return "";
   return errs.map(e=>`<div class="err">⚠️ ${e}</div>`).join("");
 }
+
+function statusLegend(){
   return `<div class="status-legend">
     <span class="sl"><span class="sl-dot" style="background:#1a7a4a"></span>Dentro da meta</span>
     <span class="sl"><span class="sl-dot" style="background:#c07800"></span>Até 10% fora</span>
