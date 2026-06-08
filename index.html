@@ -332,13 +332,14 @@ function rMeta(row, key){
 }
 
 // ── Load data ──────────────────────────────────────────────────────────────
-// Busca uma aba por gid em blocos de 2000 linhas com timeout por bloco
-async function fetchSheetByGid(sheetId, gid, apiKey, blockSize=2000){
+// Busca uma aba por nome em blocos com timeout por bloco
+async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=2000){
   const base=`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/`;
+  const enc=encodeURIComponent(tabName);
 
   async function fetchBlock(range){
     const ctrl=new AbortController();
-    const tid=setTimeout(()=>ctrl.abort(),25000);
+    const tid=setTimeout(()=>ctrl.abort(),30000);
     try{
       const res=await fetch(`${base}${encodeURIComponent(range)}?key=${apiKey}`,{signal:ctrl.signal});
       clearTimeout(tid);
@@ -346,45 +347,28 @@ async function fetchSheetByGid(sheetId, gid, apiKey, blockSize=2000){
       return await res.json();
     } catch(e){
       clearTimeout(tid);
-      throw new Error(e.name==="AbortError"?"Timeout (25s)":e.message);
+      throw new Error(e.name==="AbortError"?"Timeout (30s) no bloco":e.message);
     }
   }
 
-  // Cabeçalho
-  // Usa Sheet1 como fallback — o gid é passado como parâmetro na URL mas a API v4
-  // de values só aceita nome ou A1 notation, então precisamos do nome da aba.
-  // Estratégia: busca metadados da planilha para obter o nome da aba pelo gid.
-  const metaCtrl=new AbortController();
-  const metaTid=setTimeout(()=>metaCtrl.abort(),15000);
-  let tabName="";
-  try{
-    const metaRes=await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties&key=${apiKey}`,
-      {signal:metaCtrl.signal}
-    );
-    clearTimeout(metaTid);
-    if(metaRes.ok){
-      const metaJ=await metaRes.json();
-      const sheet=(metaJ.sheets||[]).find(s=>String(s.properties?.sheetId)===String(gid));
-      if(sheet) tabName=sheet.properties.title;
-    }
-  } catch(e){ clearTimeout(metaTid); }
-
-  if(!tabName) throw new Error(`Aba com gid=${gid} não encontrada`);
-
-  const enc=encodeURIComponent(tabName);
   let allRows=[];
   let startRow=1;
   let header=null;
 
   while(true){
     const endRow=startRow+blockSize-1;
-    const j=await fetchBlock(`${tabName}!A${startRow}:ZZ${endRow}`);
+    const range=`${tabName}!A${startRow}:ZZ${endRow}`;
+    const j=await fetchBlock(range);
     const rows=j.values||[];
     if(!rows.length) break;
-    if(!header){ header=rows[0]; startRow+=blockSize; allRows=[header,...rows.slice(1)]; }
-    else { allRows=[...allRows,...rows]; startRow+=blockSize; }
+    if(!header){
+      header=rows[0];
+      allRows=[...rows];
+    } else {
+      allRows=[...allRows,...rows];
+    }
     if(rows.length<blockSize) break;
+    startRow+=blockSize;
   }
   return {values:allRows};
 }
@@ -398,10 +382,10 @@ async function loadData(){
   const safetyTimer=setTimeout(()=>{
     if(S.firstLoad){
       S.firstLoad=false;S.loading=false;
-      S.errors.timeout="Tempo esgotado (25s). Verifique a conexão e tente atualizar.";
+      S.errors.timeout="Tempo esgotado (120s). Verifique a conexão e tente atualizar.";
       render();
     }
-  },25000);
+  },120000);
 
   // Helpers internos
   function fmtUpdated(raw){
@@ -438,10 +422,10 @@ async function loadData(){
     }
   }
 
-  // Fetch paginado por gid: retorna {ok, json, error}
-  async function safeGidFetch(sheetId, gid, label){
+  // Fetch paginado por nome de aba: retorna {ok, json, error}
+  async function safePagedFetch(sheetId, tabName, label){
     try{
-      const json=await fetchSheetByGid(sheetId, gid, API_KEY);
+      const json=await fetchSheetPaged(sheetId, tabName, API_KEY);
       return {ok:true, json};
     } catch(e){
       return {ok:false, error:`${e.message} — ${label}`};
@@ -451,8 +435,8 @@ async function loadData(){
   // Dispara os 3 fetches em paralelo, independentemente
   const [resMeta, resVendas, resFunil] = await Promise.all([
     safeFetch(URL_META,   "Base Meta (investimento)"),
-    safeGidFetch(SHEET_ID, "838848480",  "Base Vendas"),
-    safeGidFetch(SHEET_ID, "1864815755", "Base Vendas - Completo (funil)"),
+    safePagedFetch(SHEET_ID, "📥 Base Vendas",            "Base Vendas"),
+    safePagedFetch(SHEET_ID, "📥 Base Vendas - Completo", "Base Vendas - Completo (funil)"),
   ]);
 
   // ── Processa Meta ─────────────────────────────────────────────────────────
