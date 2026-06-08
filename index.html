@@ -332,30 +332,59 @@ function rMeta(row, key){
 }
 
 // ── Load data ──────────────────────────────────────────────────────────────
-// Busca uma aba em blocos de 5000 linhas para evitar timeout em abas grandes
-async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=5000){
+// Busca uma aba por gid em blocos de 2000 linhas com timeout por bloco
+async function fetchSheetByGid(sheetId, gid, apiKey, blockSize=2000){
   const base=`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/`;
-  const enc=encodeURIComponent(tabName);
-  // Primeiro busca só o cabeçalho para saber as colunas
-  const headRes=await fetch(`${base}${enc}!A1:ZZ1?key=${apiKey}`);
-  if(!headRes.ok) throw new Error(`HTTP ${headRes.status} ao carregar ${tabName}`);
-  const headJ=await headRes.json();
-  const header=(headJ.values||[])[0]||[];
 
-  // Busca dados em blocos
-  let allRows=[header];
-  let startRow=2;
+  async function fetchBlock(range){
+    const ctrl=new AbortController();
+    const tid=setTimeout(()=>ctrl.abort(),25000);
+    try{
+      const res=await fetch(`${base}${encodeURIComponent(range)}?key=${apiKey}`,{signal:ctrl.signal});
+      clearTimeout(tid);
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch(e){
+      clearTimeout(tid);
+      throw new Error(e.name==="AbortError"?"Timeout (25s)":e.message);
+    }
+  }
+
+  // Cabeçalho
+  // Usa Sheet1 como fallback — o gid é passado como parâmetro na URL mas a API v4
+  // de values só aceita nome ou A1 notation, então precisamos do nome da aba.
+  // Estratégia: busca metadados da planilha para obter o nome da aba pelo gid.
+  const metaCtrl=new AbortController();
+  const metaTid=setTimeout(()=>metaCtrl.abort(),15000);
+  let tabName="";
+  try{
+    const metaRes=await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties&key=${apiKey}`,
+      {signal:metaCtrl.signal}
+    );
+    clearTimeout(metaTid);
+    if(metaRes.ok){
+      const metaJ=await metaRes.json();
+      const sheet=(metaJ.sheets||[]).find(s=>String(s.properties?.sheetId)===String(gid));
+      if(sheet) tabName=sheet.properties.title;
+    }
+  } catch(e){ clearTimeout(metaTid); }
+
+  if(!tabName) throw new Error(`Aba com gid=${gid} não encontrada`);
+
+  const enc=encodeURIComponent(tabName);
+  let allRows=[];
+  let startRow=1;
+  let header=null;
+
   while(true){
     const endRow=startRow+blockSize-1;
-    const range=`${enc}!A${startRow}:ZZ${endRow}`;
-    const res=await fetch(`${base}${range}?key=${apiKey}`);
-    if(!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${tabName} (linha ${startRow})`);
-    const j=await res.json();
+    const j=await fetchBlock(`${tabName}!A${startRow}:ZZ${endRow}`);
     const rows=j.values||[];
     if(!rows.length) break;
-    allRows=[...allRows,...rows];
+    if(!header){ header=rows[0]; startRow+=blockSize; allRows=[header,...rows.slice(1)]; }
+    else { allRows=[...allRows,...rows]; startRow+=blockSize; }
     if(rows.length<blockSize) break;
-    startRow+=blockSize;
   }
   return {values:allRows};
 }
@@ -392,7 +421,7 @@ async function loadData(){
     return d+"T"+t;
   }
 
-  // Fetch seguro com timeout de 20s: retorna {ok, json, error}
+  // Fetch seguro para URL simples com timeout de 20s: retorna {ok, json, error}
   async function safeFetch(url, label){
     const controller=new AbortController();
     const tid=setTimeout(()=>controller.abort(),20000);
@@ -409,11 +438,21 @@ async function loadData(){
     }
   }
 
+  // Fetch paginado por gid: retorna {ok, json, error}
+  async function safeGidFetch(sheetId, gid, label){
+    try{
+      const json=await fetchSheetByGid(sheetId, gid, API_KEY);
+      return {ok:true, json};
+    } catch(e){
+      return {ok:false, error:`${e.message} — ${label}`};
+    }
+  }
+
   // Dispara os 3 fetches em paralelo, independentemente
   const [resMeta, resVendas, resFunil] = await Promise.all([
     safeFetch(URL_META,   "Base Meta (investimento)"),
-    safeFetch(URL_VENDAS, "Base Vendas"),
-    safeFetch(URL_FUNIL,  "Base Vendas - Completo (funil)"),
+    safeGidFetch(SHEET_ID, "838848480",  "Base Vendas"),
+    safeGidFetch(SHEET_ID, "1864815755", "Base Vendas - Completo (funil)"),
   ]);
 
   // ── Processa Meta ─────────────────────────────────────────────────────────
