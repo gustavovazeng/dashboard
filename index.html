@@ -167,8 +167,7 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.5;cursor:pointer}
 const IS_FILE = location.protocol === "file:";
 const SHEET_ID = "1WnzVmGkeT-s9RW3Kop1MdY8NmkNoGNk7CDDa9YvYw90";
 const API_KEY  = "AIzaSyDxMp-u0RUfy-Xv0jICULZbJGpuAUxqQPI";
-const SHEET_ID_META = "1gaMsxGBZ75oVeDJYQo0vdrW6PGoPC4DuxBmkbJ_Yf9s";
-const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID_META}/values/${encodeURIComponent("Base Meta")}?key=${API_KEY}`;
+const URL_META   = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("Ⓜ️ Base Meta")}?key=${API_KEY}`;
 const URL_VENDAS = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("📥 Base Vendas")}?key=${API_KEY}`;
 const URL_FUNIL  = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent("📥 Base Vendas - Completo")}?key=${API_KEY}`;
 
@@ -213,7 +212,7 @@ const S = {
   metaByAd:{},   // {adId: {name, date->row, spend, clicks, impressions, igUrl}}
   metaByAdByDate:{}, // {advCode: {date: {spend,clicks,impressions}}}
   vendasByAd:{}, // {adId: {qtd, valor, taxa}}
-  loading:false, errors:{}, updated:null, firstLoad:true,
+  loading:false, error:null, updated:null, firstLoad:true,
   // Principal
   startDate:nDaysAgoISO(29), endDate:todayISO(), activeQuick:"30d",
   // Tráfego
@@ -310,63 +309,29 @@ function extractAdId(raw){
   return m ? m[0] : null;
 }
 
-// ── Mapeamento de campos da Base Meta (EN ↔ PT) ───────────────────────────
-// A Sheets API às vezes retorna cabeçalhos traduzidos para PT mesmo com a planilha em EN.
-// Este helper resolve o valor correto tentando o nome EN e o equivalente PT.
-const META_FIELD_MAP = {
-  "Date":                                                    ["Data","Date"],
-  "Spend (Cost, Amount Spent)":                              ["Gastar (Custo, Valor Gasto)","Spend (Cost, Amount Spent)"],
-  "Action Link Clicks":                                      ["Cliques em links de ação","Action Link Clicks"],
-  "Impressions":                                             ["Impressões","Impressions"],
-  "Ad ID":                                                   ["ID do anúncio","Ad ID","Ad Id"],
-  "Ad Name":                                                 ["Nome do anúncio","Ad Name"],
-  "Instagram Permalink URL":                                 ["URL permanente do Instagram","Instagram Permalink URL"],
-  "Action Landing Page View":                                ["Visualização da página de destino da ação","Action Landing Page View"],
-  "Action FB Pixel Initiate Checkout (Offsite Conversion)":  ["Ação do Pixel do Facebook: Iniciar finalização da compra (conversão fora do site)","Action FB Pixel Initiate Checkout (Offsite Conversion)"],
-  "Action Omni View Content":                                ["Ação de visualização de conteúdo omni","Action Omni View Content"],
-};
-function rMeta(row, key){
-  const aliases = META_FIELD_MAP[key] || [key];
-  for(const a of aliases){ if(row[a] !== undefined) return row[a]; }
-  return "";
-}
-
 // ── Load data ──────────────────────────────────────────────────────────────
-// Busca uma aba por nome em blocos com timeout por bloco
-async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=2000){
+// Busca uma aba em blocos de 5000 linhas para evitar timeout em abas grandes
+async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=5000){
   const base=`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/`;
   const enc=encodeURIComponent(tabName);
+  // Primeiro busca só o cabeçalho para saber as colunas
+  const headRes=await fetch(`${base}${enc}!A1:ZZ1?key=${apiKey}`);
+  if(!headRes.ok) throw new Error(`HTTP ${headRes.status} ao carregar ${tabName}`);
+  const headJ=await headRes.json();
+  const header=(headJ.values||[])[0]||[];
 
-  async function fetchBlock(range){
-    const ctrl=new AbortController();
-    const tid=setTimeout(()=>ctrl.abort(),30000);
-    try{
-      const res=await fetch(`${base}${encodeURIComponent(range)}?key=${apiKey}`,{signal:ctrl.signal});
-      clearTimeout(tid);
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch(e){
-      clearTimeout(tid);
-      throw new Error(e.name==="AbortError"?"Timeout (30s) no bloco":e.message);
-    }
-  }
-
-  let allRows=[];
-  let startRow=1;
-  let header=null;
-
+  // Busca dados em blocos
+  let allRows=[header];
+  let startRow=2;
   while(true){
     const endRow=startRow+blockSize-1;
-    const range=`${tabName}!A${startRow}:ZZ${endRow}`;
-    const j=await fetchBlock(range);
+    const range=`${enc}!A${startRow}:ZZ${endRow}`;
+    const res=await fetch(`${base}${range}?key=${apiKey}`);
+    if(!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${tabName} (linha ${startRow})`);
+    const j=await res.json();
     const rows=j.values||[];
     if(!rows.length) break;
-    if(!header){
-      header=rows[0];
-      allRows=[...rows];
-    } else {
-      allRows=[...allRows,...rows];
-    }
+    allRows=[...allRows,...rows];
     if(rows.length<blockSize) break;
     startRow+=blockSize;
   }
@@ -375,125 +340,83 @@ async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=2000){
 
 async function loadData(){
   if(IS_FILE){ S.firstLoad=false;render();return; }
-  S.loading=true;S.errors={};
+  S.loading=true;S.error=null;
   if(!S.firstLoad) render();
+  // Timeout de segurança: se demorar >25s libera a tela
+  const _t=setTimeout(()=>{
+    if(S.firstLoad){S.firstLoad=false;S.loading=false;
+      S.error="Tempo esgotado. Verifique a conexão e tente atualizar.";render();}
+  },90000);
+  try {
+    const [mr,vr,fr]=await Promise.all([fetch(URL_META),fetch(URL_VENDAS),fetch(URL_FUNIL)]);
+    if(!mr.ok)throw new Error(`HTTP ${mr.status} ao carregar Meta`);
+    if(!vr.ok)throw new Error(`HTTP ${vr.status} ao carregar Vendas`);
+    if(!fr.ok)throw new Error(`HTTP ${fr.status} ao carregar Funil`);
+    const [mj,vj,fj]=await Promise.all([mr.json(),vr.json(),fr.json()]);
 
-  // Timeout de segurança: se Promise.all travar além de 25s, libera a tela
-  const safetyTimer=setTimeout(()=>{
-    if(S.firstLoad){
-      S.firstLoad=false;S.loading=false;
-      S.errors.timeout="Tempo esgotado (120s). Verifique a conexão e tente atualizar.";
-      render();
-    }
-  },120000);
-
-  // Helpers internos
-  function fmtUpdated(raw){
-    if(!raw) return "—";
-    const parts=raw.trim().split(" ");
-    const datePart=parts[0]; const timePart=parts[1]||"";
-    const dp=datePart.split("/");
-    const dateStr=dp.length===3?`${dp[0]}/${dp[1]}/${dp[2]}`:"";
-    return timePart ? `${dateStr} ${timePart.slice(0,5)}` : dateStr;
-  }
-  function rawToISO(raw){
-    if(!raw) return "";
-    const parts=raw.trim().split(" ");
-    const d=parts[0]; const t=parts[1]||"00:00:00";
-    const dp=d.split("/");
-    if(dp.length===3) return `${dp[2]}-${dp[1].padStart(2,"0")}-${dp[0].padStart(2,"0")}T${t}`;
-    return d+"T"+t;
-  }
-
-  // Fetch seguro para URL simples com timeout de 20s: retorna {ok, json, error}
-  async function safeFetch(url, label){
-    const controller=new AbortController();
-    const tid=setTimeout(()=>controller.abort(),20000);
-    try{
-      const r=await fetch(url,{signal:controller.signal});
-      clearTimeout(tid);
-      if(!r.ok) return {ok:false, error:`HTTP ${r.status} — ${label}`};
-      const j=await r.json();
-      return {ok:true, json:j};
-    } catch(e){
-      clearTimeout(tid);
-      const msg=e.name==="AbortError"?"Timeout (20s)":"Falha de rede";
-      return {ok:false, error:`${msg} — ${label}`};
-    }
-  }
-
-  // Fetch paginado por nome de aba: retorna {ok, json, error}
-  async function safePagedFetch(sheetId, tabName, label){
-    try{
-      const json=await fetchSheetPaged(sheetId, tabName, API_KEY);
-      return {ok:true, json};
-    } catch(e){
-      return {ok:false, error:`${e.message} — ${label}`};
-    }
-  }
-
-  // Dispara os 3 fetches em paralelo, independentemente
-  const [resMeta, resVendas, resFunil] = await Promise.all([
-    safeFetch(URL_META,   "Base Meta (investimento)"),
-    safePagedFetch(SHEET_ID, "📥 Base Vendas",            "Base Vendas"),
-    safePagedFetch(SHEET_ID, "📥 Base Vendas - Completo", "Base Vendas - Completo (funil)"),
-  ]);
-
-  // ── Processa Meta ─────────────────────────────────────────────────────────
-  if(resMeta.ok){
-    const mD={}, mByAd={}, mByAdByDate={};
-    for(const r of parseSheet(resMeta.json)){
-      const d=toISO(rMeta(r,"Date"));if(!d)continue;
+    // Meta — por dia (para abas Principal e Tráfego)
+    const mD={};
+    // Meta — por Ad ID (para aba Anúncios)
+    const mByAd={};
+    const mByAdByDate={};  // {advCode: {date: {spend,clicks,impressions}}}
+    for(const r of parseSheet(mj)){
+      const d=toISO(r["Date"]);if(!d)continue;
+      // Por dia
       if(!mD[d])mD[d]={spend:0,clicks:0,impressions:0,landingViews:0,checkouts:0,purchases:0,viewContent:0};
-      mD[d].spend        += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
-      mD[d].clicks       += parseInt(rMeta(r,"Action Link Clicks")||0)||0;
-      mD[d].impressions  += parseInt(rMeta(r,"Impressions")||0)||0;
-      mD[d].landingViews += parseInt(rMeta(r,"Action Landing Page View")||0)||0;
-      mD[d].checkouts    += parseInt(rMeta(r,"Action FB Pixel Initiate Checkout (Offsite Conversion)")||0)||0;
-      mD[d].viewContent  += parseInt(rMeta(r,"Action Omni View Content")||0)||0;
-      const adId=rMeta(r,"Ad ID")||"";
-      const adName=rMeta(r,"Ad Name")||"";
-      const igUrl=rMeta(r,"Instagram Permalink URL")||"";
+      mD[d].spend        += parseBRL(r["Spend (Cost, Amount Spent)"]);
+      mD[d].clicks       += parseInt(r["Action Link Clicks"]||0)||0;
+      mD[d].impressions  += parseInt(r["Impressions"]||0)||0;
+      mD[d].landingViews += parseInt(r["Action Landing Page View"]||0)||0;
+      mD[d].checkouts    += parseInt(r["Action FB Pixel Initiate Checkout (Offsite Conversion)"]||0)||0;
+      mD[d].viewContent  += parseInt(r["Action Omni View Content"]||0)||0;
+      // Por anúncio
+      const adId=r["Ad ID"]||r["Ad Id"]||"";
+      const adName=r["Ad Name"]||"";
+      const igUrl=r["Instagram Permalink URL"]||"";
       const advCode=extractAdvCode(adName);
       if(advCode){
         if(!mByAd[advCode])mByAd[advCode]={advCode,adIds:new Set(),spend:0,clicks:0,impressions:0,igUrl:"",dates:new Set()};
         if(adId) mByAd[advCode].adIds.add(adId);
-        mByAd[advCode].spend       += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
-        mByAd[advCode].clicks      += parseInt(rMeta(r,"Action Link Clicks")||0)||0;
-        mByAd[advCode].impressions += parseInt(rMeta(r,"Impressions")||0)||0;
+        mByAd[advCode].spend       += parseBRL(r["Spend (Cost, Amount Spent)"]);
+        mByAd[advCode].clicks      += parseInt(r["Action Link Clicks"]||0)||0;
+        mByAd[advCode].impressions += parseInt(r["Impressions"]||0)||0;
         mByAd[advCode].dates.add(d);
         if(igUrl && !mByAd[advCode].igUrl) mByAd[advCode].igUrl=igUrl;
+        // Por data (para filtrar por período na aba Anúncios)
         if(!mByAdByDate[advCode]) mByAdByDate[advCode]={};
         if(!mByAdByDate[advCode][d]) mByAdByDate[advCode][d]={spend:0,clicks:0,impressions:0,adIds:new Set(),igUrl:""};
-        mByAdByDate[advCode][d].spend       += parseBRL(rMeta(r,"Spend (Cost, Amount Spent)"));
-        mByAdByDate[advCode][d].clicks      += parseInt(rMeta(r,"Action Link Clicks")||0)||0;
-        mByAdByDate[advCode][d].impressions += parseInt(rMeta(r,"Impressions")||0)||0;
+        mByAdByDate[advCode][d].spend       += parseBRL(r["Spend (Cost, Amount Spent)"]);
+        mByAdByDate[advCode][d].clicks      += parseInt(r["Action Link Clicks"]||0)||0;
+        mByAdByDate[advCode][d].impressions += parseInt(r["Impressions"]||0)||0;
         if(adId) mByAdByDate[advCode][d].adIds.add(adId);
         if(igUrl && !mByAdByDate[advCode][d].igUrl) mByAdByDate[advCode][d].igUrl=igUrl;
       }
     }
-    S.meta=mD; S.metaByAd=mByAd; S.metaByAdByDate=mByAdByDate;
-  } else {
-    S.errors.meta=resMeta.error;
-    console.error("Meta fetch error:", resMeta.error);
-  }
+    S.meta=mD;
+    S.metaByAd=mByAd;
+    S.metaByAdByDate=mByAdByDate;
 
-  // ── Processa Vendas ───────────────────────────────────────────────────────
-  if(resVendas.ok){
-    const vD={}, vByAd={}, vByAdDate={};
-    for(const r of parseSheet(resVendas.json)){
+    // Vendas — por dia (Principal/Tráfego) e por Ad ID (Anúncios)
+    const vD={};
+    const vByAd={};
+    const vByAdDate={};  // {adId: {date: {qtd,valor,taxa}}}
+    for(const r of parseSheet(vj)){
       const d=toISO(r["Data correta"]);if(!d)continue;
+      // Por dia
       if(!vD[d])vD[d]={qtd:0,valor:0,taxa:0};
       vD[d].qtd   += 1;
       vD[d].valor += parseBRL(r["Valor do produto"]);
       vD[d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
+      // Por anúncio — extrair Ad ID do campo "Ad Id" (pode ser string longa)
       const rawAdId=r["Ad Id"]||"";
       const adId=extractAdId(rawAdId);
       if(adId){
+        // Global (legado)
         if(!vByAd[adId])vByAd[adId]={qtd:0,valor:0,taxa:0};
         vByAd[adId].qtd   += 1;
         vByAd[adId].valor += parseBRL(r["Valor do produto"]);
         vByAd[adId].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
+        // Por data (para filtrar por período na aba Anúncios)
         if(!vByAdDate[adId]) vByAdDate[adId]={};
         if(!vByAdDate[adId][d]) vByAdDate[adId][d]={qtd:0,valor:0,taxa:0};
         vByAdDate[adId][d].qtd   += 1;
@@ -501,20 +424,41 @@ async function loadData(){
         vByAdDate[adId][d].taxa  += parseBRLAbs(r["Taxa da plataforma"]);
       }
     }
-    S.vendas=vD; S.vendasByAd=vByAd; S.vendasByAdDate=vByAdDate;
-  } else {
-    S.errors.vendas=resVendas.error;
-    console.error("Vendas fetch error:", resVendas.error);
-  }
+    S.vendas=vD;
+    S.vendasByAd=vByAd;
+    S.vendasByAdDate=vByAdDate;
 
-  // ── Processa Funil ────────────────────────────────────────────────────────
-  if(resFunil.ok){
-    const rawFunil=parseSheet(resFunil.json);
-    S.funilRows=deduplicateFunilRows(expandFunilRows(rawFunil));
-    try{ S.funil=buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
+    // ── Funil — Base Vendas Completo ──────────────────────────────────────
+    // Expande formato horizontal (OBs na mesma linha) e deduplica eventos webhook
+    const rawFunil = parseSheet(fj);
+    S.funilRows = deduplicateFunilRows(expandFunilRows(rawFunil));
+    try{ S.funil = buildFunilData(S.funilRows, S.fStartDate, S.fEndDate); }
     catch(fe){ console.error("buildFunilData error:",fe); S.funil={}; }
-    // "Atualizado em" — última venda Paga do Manual
-    let lastManualSale="", lastManualSaleISO="";
+
+    // "Atualizado em" = data/hora da última venda Paga do Manual Definitivo
+    // Compara em ISO para evitar bug de ordenação de string dd/mm/yyyy
+    function fmtUpdated(raw){
+      if(!raw) return "—";
+      const parts=raw.trim().split(" ");
+      const datePart=parts[0];
+      const timePart=parts[1]||"";
+      const dp=datePart.split("/");
+      const dateStr=dp.length===3?`${dp[0]}/${dp[1]}/${dp[2]}`:"";
+      return timePart ? `${dateStr} ${timePart.slice(0,5)}` : dateStr;
+    }
+    function rawToISO(raw){
+      // converte dd/mm/yyyy HH:MM:SS ou yyyy-mm-dd para yyyy-mm-ddTHH:MM para comparação
+      if(!raw) return "";
+      const parts=raw.trim().split(" ");
+      const d=parts[0]; const t=parts[1]||"00:00:00";
+      const dp=d.split("/");
+      if(dp.length===3) return `${dp[2]}-${dp[1].padStart(2,"0")}-${dp[0].padStart(2,"0")}T${t}`;
+      return d+"T"+t; // já em ISO
+    }
+    let lastManualSale="";
+    let lastManualSaleISO="";
+    // Percorre as linhas RAW (antes do expandFunilRows que usa toISO)
+    // para preservar o horário completo
     for(const r of rawFunil){
       const nm=(r["Nome do produto"]||"").toUpperCase();
       if(!nm.includes("MANUAL DEFINITIVO")) continue;
@@ -522,16 +466,17 @@ async function loadData(){
       if(st!=="Paga") continue;
       const raw=(r["Data da compra"]||r["Data"]||"").trim();
       const iso=rawToISO(raw);
-      if(iso>lastManualSaleISO){ lastManualSaleISO=iso; lastManualSale=raw; }
+      if(iso > lastManualSaleISO){ lastManualSaleISO=iso; lastManualSale=raw; }
     }
     S.updated=fmtUpdated(lastManualSale);
-  } else {
-    S.errors.funil=resFunil.error;
-    console.error("Funil fetch error:", resFunil.error);
+    S.firstLoad=false;
+    clearTimeout(_t);
+  } catch(e){
+    clearTimeout(_t);
+    S.error="Erro ao carregar: "+e.message;
+    S.firstLoad=false;
+    console.error("loadData error:",e);
   }
-
-  clearTimeout(safetyTimer);
-  S.firstLoad=false;
   S.loading=false;
   render();
 }
@@ -847,12 +792,6 @@ function kpiCard(lbl,val,sub,color,small=false){
   </div>`;
 }
 
-function errorsBar(){
-  const errs=Object.values(S.errors||{});
-  if(!errs.length) return "";
-  return errs.map(e=>`<div class="err">⚠️ ${e}</div>`).join("");
-}
-
 function statusLegend(){
   return `<div class="status-legend">
     <span class="sl"><span class="sl-dot" style="background:#1a7a4a"></span>Dentro da meta</span>
@@ -879,7 +818,7 @@ function renderPrincipal(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${errorsBar()}
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
     ${periodBar(S.startDate,S.endDate,S.activeQuick,"")}
     <div class="g3" style="margin-bottom:12px">
       ${kpiCard("Investimento",fBRL(tot.spend),`${tot.vendas} vendas · ${daily.length} dias`,"#1c1410")}
@@ -1030,7 +969,7 @@ function renderTrafego(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${errorsBar()}
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
 
     <div class="section-lbl">Hoje — ${fDateBR(today)}</div>
     <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-bottom:18px">
@@ -1153,7 +1092,7 @@ function renderAnuncios(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${errorsBar()}
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
 
     ${periodBar(S.aStartDate,S.aEndDate,S.aActiveQuick,"a")}
 
@@ -1490,24 +1429,18 @@ function buildFunilData(rows, start, end){
     ltv:  totalFat/manualCount,
     lucro: totalFat - totalTaxa - (totalSpend*TAXA_IMPOSTO),
     ascensao: manualCount>0 ? ((manualCount - (manualCount - Object.keys(counts).filter(k=>k!=="manual"&&counts[k]>0).reduce((a,k)=>Math.min(a,counts.manual),counts.manual)))/manualCount)*100 : 0,
-    // Taxa de ascensão: % de compradores únicos do Manual (no período) que compraram planLucro e/ou curso
+    // Taxa de ascensão: % de compradores únicos do Manual que compraram planLucro e/ou curso
     taxaAscensao: (function(){
-      let total=0, cnt=0;
+      if(!manualCount) return 0;
+      let cnt=0;
       for(const [,buyer] of buyers){
         const paid=buyer.products.filter(p=>p.status==="Paga");
-        // Compra do Manual dentro do período filtrado
-        const mp=paid.filter(p=>{
-          if(p.id!=="manual") return false;
-          if(start && p.date<start) return false;
-          if(end   && p.date>end)   return false;
-          return true;
-        }).sort((a,b)=>a.date.localeCompare(b.date))[0];
+        const mp=paid.filter(p=>p.id==="manual").sort((a,b)=>a.date.localeCompare(b.date))[0];
         if(!mp) continue;
-        total++;
         const ascendeu=paid.some(p=>(p.id==="planLucro"||p.id==="curso")&&p.date>=mp.date);
         if(ascendeu) cnt++;
       }
-      return total>0 ? (cnt/total)*100 : 0;
+      return (cnt/manualCount)*100;
     })(),
     statusCounts, statusVals, statusByProd, buyers,
   };
@@ -1620,7 +1553,7 @@ function renderFunil(){
       </div>
       <button class="btn-refresh" onclick="loadData()" ${S.loading?"disabled":""}>${S.loading?"Carregando...":"↻ Atualizar"}</button>
     </div>
-    ${errorsBar()}
+    ${S.error?`<div class="err">⚠️ ${S.error}</div>`:""}
 
     <div class="period-wrap">
       <div class="period-top">
