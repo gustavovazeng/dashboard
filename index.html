@@ -527,17 +527,30 @@ function extractAdId(raw){
 }
 
 // ── Load data ──────────────────────────────────────────────────────────────
-// Busca uma aba em blocos, disparando várias requisições em PARALELO por vez (em vez de
-// uma de cada vez) — o gargalo é o round-trip de rede, não o processamento, então buscar
-// vários blocos ao mesmo tempo reduz bastante o tempo total em abas grandes. Mesmo padrão
-// (onda de N requisições em paralelo, para quando uma onda inteira volta vazia) já usado e
-// testado em fetchSheetRows() pra Sessão Estratégica — só que aqui via API REST v4 (com
-// API key), não gviz, pra manter o mesmo formato de resposta ({values:[[...]]}) que o
-// resto do código (Manual/Mapa/Vendas/Distribuição) já espera.
-async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=2000, parallel=6){
+// fetch com retry automático em HTTP 429 (rate limit do Google) — backoff exponencial
+// com jitter. A API v4 com API key tem uma cota curta de requisições simultâneas; disparar
+// várias de uma vez (mesmo que poucas) pode esbarrar nisso, e 429 é transitório — vale
+// tentar de novo, não é um erro real de dado/planilha.
+async function fetchRetry429(url, maxRetries=5){
+  for(let attempt=0; ; attempt++){
+    const res=await fetch(url);
+    if(res.status!==429 || attempt>=maxRetries) return res;
+    const wait=500*Math.pow(2,attempt)+Math.random()*300;
+    await new Promise(r=>setTimeout(r,wait));
+  }
+}
+// Busca uma aba em blocos, disparando algumas requisições em paralelo por onda (em vez de
+// uma de cada vez, e sem exagerar na concorrência — ver fetchRetry429 acima) — o gargalo é
+// o round-trip de rede, não o processamento, então buscar alguns blocos ao mesmo tempo já
+// reduz bastante o tempo total em abas grandes. Mesmo padrão (onda de N requisições em
+// paralelo, para quando uma onda inteira volta vazia) já usado e testado em
+// fetchSheetRows() pra Sessão Estratégica — só que aqui via API REST v4 (com API key), não
+// gviz, pra manter o mesmo formato de resposta ({values:[[...]]}) que o resto do código
+// (Manual/Mapa/Vendas/Distribuição) já espera.
+async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=3000, parallel=3){
   const base=`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/`;
   const enc=encodeURIComponent(tabName);
-  const headRes=await fetch(`${base}${enc}!A1:ZZ1?key=${apiKey}`);
+  const headRes=await fetchRetry429(`${base}${enc}!A1:ZZ1?key=${apiKey}`);
   if(!headRes.ok) throw new Error(`HTTP ${headRes.status} ao carregar ${tabName}`);
   const headJ=await headRes.json();
   const header=(headJ.values||[])[0]||[];
@@ -549,7 +562,7 @@ async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=2000, paralle
       const s=startRow+i*blockSize, e=s+blockSize-1;
       const range=`${enc}!A${s}:ZZ${e}`;
       wave.push(
-        fetch(`${base}${range}?key=${apiKey}`).then(async res=>{
+        fetchRetry429(`${base}${range}?key=${apiKey}`).then(async res=>{
           if(!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${tabName} (linha ${s})`);
           const j=await res.json();
           return j.values||[];
