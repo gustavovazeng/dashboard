@@ -563,6 +563,13 @@ async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=3000, paralle
       const range=`${enc}!A${s}:ZZ${e}`;
       wave.push(
         fetchRetry429(`${base}${range}?key=${apiKey}`).then(async res=>{
+          // HTTP 400 aqui = o range pedido ("linha S até E") caiu além do tamanho real da
+          // grade da planilha (não é erro de dado nem de permissão — isso já teria
+          // aparecido na busca do cabeçalho, lá em cima). Como buscamos vários blocos em
+          // paralelo sem saber de antemão onde a planilha termina, é normal um bloco cair
+          // além da borda — trata como "sem linhas" pra essa onda, igual a uma resposta
+          // vazia, em vez de estourar erro.
+          if(res.status===400) return [];
           if(!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${tabName} (linha ${s})`);
           const j=await res.json();
           return j.values||[];
