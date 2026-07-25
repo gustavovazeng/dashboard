@@ -156,6 +156,7 @@ input[type=date]::-webkit-calendar-picker-indicator{opacity:.4;cursor:pointer;fi
       <div class="funil-opt" id="fopt-mapa" onclick="selectFunil('mapa')"><span class="fopt-dot"></span>Mapa da Casa</div>
       <div class="funil-opt" id="fopt-sessao" onclick="selectFunil('sessao')"><span class="fopt-dot"></span>Sessão Estratégica</div>
       <div class="funil-opt" id="fopt-geral" onclick="selectFunil('geral')"><span class="fopt-dot"></span>Consolidado</div>
+      <div class="funil-opt" id="fopt-dist" onclick="selectFunil('dist')"><span class="fopt-dot"></span>Distribuição de Conteúdo</div>
     </div>
   </div>
 
@@ -287,6 +288,18 @@ const S = {
     selectedCamps:new Set(), selectedAds:new Set(),
     overlays:{cpf:{inv:false},ctr:{inv:false},cpm:{inv:false},cpc:{inv:false},txConvPg:{inv:false},connect:{inv:false}},
   },
+  // ── Dados Distribuição de Conteúdo (Seguidores — mesma planilha da Sessão, aba
+  // "Base Seguidores", funil independente, isolado igual à Sessão) ──
+  dist:{
+    daily:{},              // iso date → {spend,clicks,impressions,reach,profileVisits,seguidores}
+    byAd:{}, byAdByDate:{}, // adId → {...} / adId → date → {...}
+    byCamp:{}, byCampByDate:{},
+    updated:null, error:null,
+    manualSpendHoje:null,  // investimento de hoje editado manualmente no Resumo diário (Distribuição)
+    planAteHoje:null, planAteHojeSeg:null, // metas manuais — plan até hoje (investimento / seguidores)
+    planDiario:null, planDiarioSeg:null,   // metas manuais — plan diário, usado em Ontem e Hoje
+    aSort:{col:"spend",dir:"desc"},
+  },
   loading:false, error:null, firstLoad:true,
   // Principal
   startDate:nDaysAgoISO(29), endDate:todayISO(), activeQuick:"30d",
@@ -310,7 +323,8 @@ const S = {
   anaStatusFiltro:"all", anaStatusGroup:"produto",
   // Overlay toggles por gráfico
   overlays:{cpc:{inv:false,cpv:false},ctr:{inv:false,cpv:false},cpm:{inv:false,cpv:false},
-    txPagChk:{inv:false,cpv:false},txChkVnd:{inv:false,cpv:false},connect:{inv:false,cpv:false}},
+    txPagChk:{inv:false,cpv:false},txChkVnd:{inv:false,cpv:false},connect:{inv:false,cpv:false},
+    custoPorVisita:{inv:false,cpv:false},custoPorSeguidor:{inv:false,cpv:false},txConvSeg:{inv:false,cpv:false}},
   currentPage:"principal",
 };
 
@@ -371,18 +385,20 @@ function renderHeader(){
   const p=S.currentPage;
   const isGeral=S.currentFunil==="geral";
   // Funil selector
-  const names={manual:"Manual Definitivo",mapa:"Mapa da Casa",sessao:"Sessão Estratégica",geral:"Consolidado"};
+  const names={manual:"Manual Definitivo",mapa:"Mapa da Casa",sessao:"Sessão Estratégica",geral:"Consolidado",dist:"Distribuição de Conteúdo"};
   const fn=document.getElementById("funil-name"); if(fn) fn.textContent=names[S.currentFunil]||"Manual Definitivo";
   const fs=document.getElementById("funil-status"); if(fs) fs.textContent="ativo";
-  ["manual","mapa","sessao","geral"].forEach(f=>{
+  ["manual","mapa","sessao","geral","dist"].forEach(f=>{
     const el=document.getElementById("fopt-"+f);
     if(el) el.classList.toggle("fopt-active",f===S.currentFunil);
   });
   // Tabs visibility
   const tabsEl=document.getElementById("hdr-tabs"); if(!tabsEl) return;
+  const isDist=S.currentFunil==="dist";
   const TABS_FUNIL=[{id:"principal",label:"⊞ Principal"},{id:"trafego",label:"⟳ Métricas tráfego"},{id:"funil",label:"▽ Métricas do funil"},{id:"anuncios",label:"◈ Anúncios"},{id:"resumo",label:"📋 Resumo diário"}];
+  const TABS_DIST=[{id:"principal",label:"⊞ Principal"},{id:"trafego",label:"⟳ Métricas tráfego"},{id:"anuncios",label:"◈ Campanhas/Anúncios"},{id:"resumo",label:"📋 Resumo diário"}];
   const TABS_GERAL=[{id:"geral-principal",label:"⊞ Principal"},{id:"geral-funil",label:"▽ Métricas do funil"}];
-  const tabs=isGeral?TABS_GERAL:TABS_FUNIL;
+  const tabs=isGeral?TABS_GERAL:(isDist?TABS_DIST:TABS_FUNIL);
   tabsEl.innerHTML=tabs.map(t=>`<button class="htab${p===t.id?" htab-active":""}" onclick="navTo('${t.id}')">${t.label}</button>`).join("");
   // Period presets
   const per=getCurrentPeriod();
@@ -511,8 +527,14 @@ function extractAdId(raw){
 }
 
 // ── Load data ──────────────────────────────────────────────────────────────
-// Busca uma aba em blocos de 5000 linhas para evitar timeout em abas grandes
-async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=5000){
+// Busca uma aba em blocos, disparando várias requisições em PARALELO por vez (em vez de
+// uma de cada vez) — o gargalo é o round-trip de rede, não o processamento, então buscar
+// vários blocos ao mesmo tempo reduz bastante o tempo total em abas grandes. Mesmo padrão
+// (onda de N requisições em paralelo, para quando uma onda inteira volta vazia) já usado e
+// testado em fetchSheetRows() pra Sessão Estratégica — só que aqui via API REST v4 (com
+// API key), não gviz, pra manter o mesmo formato de resposta ({values:[[...]]}) que o
+// resto do código (Manual/Mapa/Vendas/Distribuição) já espera.
+async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=2000, parallel=6){
   const base=`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/`;
   const enc=encodeURIComponent(tabName);
   const headRes=await fetch(`${base}${enc}!A1:ZZ1?key=${apiKey}`);
@@ -522,16 +544,23 @@ async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=5000){
   let allRows=[header];
   let startRow=2;
   while(true){
-    const endRow=startRow+blockSize-1;
-    const range=`${enc}!A${startRow}:ZZ${endRow}`;
-    const res=await fetch(`${base}${range}?key=${apiKey}`);
-    if(!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${tabName} (linha ${startRow})`);
-    const j=await res.json();
-    const rows=j.values||[];
-    if(!rows.length) break;
-    allRows=[...allRows,...rows];
-    if(rows.length<blockSize) break;
-    startRow+=blockSize;
+    const wave=[];
+    for(let i=0;i<parallel;i++){
+      const s=startRow+i*blockSize, e=s+blockSize-1;
+      const range=`${enc}!A${s}:ZZ${e}`;
+      wave.push(
+        fetch(`${base}${range}?key=${apiKey}`).then(async res=>{
+          if(!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${tabName} (linha ${s})`);
+          const j=await res.json();
+          return j.values||[];
+        })
+      );
+    }
+    const results=await Promise.all(wave);
+    let anyRows=false;
+    for(const rows of results){ if(rows.length){ anyRows=true; allRows=allRows.concat(rows); } }
+    startRow+=parallel*blockSize;
+    if(!anyRows) break; // onda inteira veio vazia — chegamos ao fim dos dados
   }
   return {values:allRows};
 }
@@ -558,12 +587,16 @@ async function loadData(force=false){
         S.error="Tempo esgotado. Verifique a conexão e tente atualizar.";render();}
     },90000);
     try{
-      const [mr,vr,hr,mmr]=await Promise.all([fetch(URL_META),fetch(URL_VENDAS),fetch(URL_HIST),fetch(URL_META_MAPA)]);
-      if(!mr.ok)throw new Error(`HTTP ${mr.status} ao carregar Meta`);
-      if(!vr.ok)throw new Error(`HTTP ${vr.status} ao carregar Vendas`);
-      if(!hr.ok)throw new Error(`HTTP ${hr.status} ao carregar Histórico`);
-      if(!mmr.ok)throw new Error(`HTTP ${mmr.status} ao carregar Meta Mapa`);
-      [mj,vj,hj,mmj]=await Promise.all([mr.json(),vr.json(),hr.json(),mmr.json()]);
+      // Antes: 1 fetch() por aba, trazendo a aba inteira de uma vez (lento em abas grandes).
+      // Agora: fetchSheetPaged() busca cada aba em blocos paralelos, igual à Sessão — mesmo
+      // formato de retorno ({values:[[...]]}), então o resto do código (parseSheet(mj) etc.)
+      // não muda em nada.
+      [mj,vj,hj,mmj]=await Promise.all([
+        fetchSheetPaged(SHEET_ID_META,"Base Meta",API_KEY),
+        fetchSheetPaged(SHEET_ID_VENDAS,"📥 Base Vendas - Completo",API_KEY),
+        fetchSheetPaged(SHEET_ID_VENDAS,"📥 Base Vendas - Completo - manual",API_KEY),
+        fetchSheetPaged(SHEET_ID_META_MAPA,"Base Meta",API_KEY),
+      ]);
       // Salva no cache para próximas aberturas
       try{ localStorage.setItem(CACHE_KEY,JSON.stringify({mj,vj,hj,mmj})); }catch(e){ console.warn("Cache cheio:",e); }
       clearTimeout(_t);
@@ -577,19 +610,33 @@ async function loadData(force=false){
     S.loading=false;
   }
 
-  // ── Sessão Estratégica: busca ao vivo (Google Sheets via gviz), independente do
-  // Manual/Mapa/Consolidado — planilha e cache à parte (mesmo cliente, funil separado).
-  S.sessao.error=null;
-  try{
-    const [mRowsSessao,lRowsSessao]=await Promise.all([
-      fetchSheetRows(SHEET_META_NAME,SHEET_META_LASTCOL),
-      fetchSheetRows(SHEET_FORM_NAME,SHEET_FORM_LASTCOL),
-    ]);
-    processDataSessao(mRowsSessao,lRowsSessao);
-  }catch(e){
-    console.error("loadData (Sessão Estratégica) error:",e);
-    S.sessao.error="Erro ao carregar dados: "+e.message;
-  }
+  // ── Sessão Estratégica e Distribuição de Conteúdo: busca ao vivo, independente do
+  // Manual/Mapa/Consolidado — mesma planilha (SHEET_ID), abas próprias, cada uma isolada
+  // no seu try/catch (uma falhar não derruba a outra nem o resto da dash).
+  const sessaoPromise=(async()=>{
+    S.sessao.error=null;
+    try{
+      const [mRowsSessao,lRowsSessao]=await Promise.all([
+        fetchSheetRows(SHEET_META_NAME,SHEET_META_LASTCOL),
+        fetchSheetRows(SHEET_FORM_NAME,SHEET_FORM_LASTCOL),
+      ]);
+      processDataSessao(mRowsSessao,lRowsSessao);
+    }catch(e){
+      console.error("loadData (Sessão Estratégica) error:",e);
+      S.sessao.error="Erro ao carregar dados: "+e.message;
+    }
+  })();
+  const distPromise=(async()=>{
+    S.dist.error=null;
+    try{
+      const segRaw=await fetchSheetPaged(SHEET_ID,"Base Seguidores",API_KEY);
+      processDataDist(segRaw.values||[]);
+    }catch(e){
+      console.error("loadData (Distribuição de Conteúdo) error:",e);
+      S.dist.error="Erro ao carregar dados: "+e.message;
+    }
+  })();
+  await Promise.all([sessaoPromise,distPromise]);
 
   // ── Processamento dos dados (Manual/Mapa) ─────────────────────────────────
   try{
@@ -1112,7 +1159,8 @@ function switchFunil(id){
   if(isGeral){
     navTo('geral-principal');
   } else {
-    const pg=(S.currentPage==='geral-principal'||S.currentPage==='geral-funil')?'principal':S.currentPage;
+    let pg=(S.currentPage==='geral-principal'||S.currentPage==='geral-funil')?'principal':S.currentPage;
+    if(id==='dist'&&pg==='funil') pg='principal'; // Distribuição de Conteúdo não tem página "Métricas do funil"
     navTo(pg);
   }
 }
@@ -2159,12 +2207,16 @@ function buildFunilData(rows, start, end, funil){
     roas: totalSpend>0 ? totalFat/totalSpend : 0,
     ltv:  totalFat/manualCount,
     lucro: totalFat - totalTaxa - (totalSpend*TAXA_IMPOSTO),
+    // A compra do principal (mp) precisa cair dentro do período selecionado — mesma regra usada
+    // pra contar manualCount — senão o numerador conta compradores de fora do período filtrado
+    // enquanto o denominador (manualCount) só conta os de dentro, estourando >100%.
     taxaAscensao: (function(){
       if(!manualCount) return 0;
       let cnt=0;
       for(const [,buyer] of buyers){
         const paid=buyer.products.filter(p=>p.status==="Paga");
-        const mp=paid.filter(p=>p.id===primaryId).sort((a,b)=>a.date.localeCompare(b.date))[0];
+        const mp=paid.filter(p=>p.id===primaryId&&(!start||p.date>=start)&&(!end||p.date<=end))
+                     .sort((a,b)=>a.date.localeCompare(b.date))[0];
         if(!mp) continue;
         const ascendeu=paid.some(p=>(p.id==="planLucro"||p.id==="curso")&&p.date>=mp.date);
         if(ascendeu) cnt++;
@@ -2174,13 +2226,17 @@ function buildFunilData(rows, start, end, funil){
     // Tx de order bump: % de compradores do produto principal que também levaram pelo menos 1
     // order bump (Checklist e/ou Planilha Financiamento no Manual; Guia Caixa e/ou Checklist no
     // Mapa) — mesmo critério de "comprador distinto" já usado acima pra taxaAscensao.
+    // A compra do principal (mp) precisa cair dentro do período selecionado — mesma regra usada
+    // pra contar manualCount — senão o numerador conta compradores de fora do período filtrado
+    // enquanto o denominador (manualCount) só conta os de dentro, estourando >100%.
     taxaOrderBump: (function(){
       if(!manualCount) return 0;
       const obIds=new Set([...OB_FAT_IDS]); obIds.delete(primaryId);
       let cnt=0;
       for(const [,buyer] of buyers){
         const paid=buyer.products.filter(p=>p.status==="Paga");
-        const mp=paid.filter(p=>p.id===primaryId).sort((a,b)=>a.date.localeCompare(b.date))[0];
+        const mp=paid.filter(p=>p.id===primaryId&&(!start||p.date>=start)&&(!end||p.date<=end))
+                     .sort((a,b)=>a.date.localeCompare(b.date))[0];
         if(!mp) continue;
         const levouOB=paid.some(p=>obIds.has(p.id)&&p.date>=mp.date);
         if(levouOB) cnt++;
@@ -2241,7 +2297,9 @@ function buildGeralData(rows, start, end){
   let totalFat=0, totalTaxa=0;
   const buyerCountedForProd=new Map(); // bKey → Set(prodId) — evita contar o mesmo comprador 2x por produto
   const entryBuyerKeys=new Set();
+  const entryDateInPeriod=new Map(); // bKey → 1ª data de entrada (manual/mapa) DENTRO do período
   const ascensaoKeys=new Set();
+  const ascensaoCandidates=[]; // {bKey,dt} — só vira ascensaoKeys depois, se a entrada também foi no período
 
   for(const r of rows){
     const dt=toISO(r["Data da compra"]||"")||"";
@@ -2280,14 +2338,23 @@ function buildGeralData(rows, start, end){
       fat[prodId]=(fat[prodId]||0)+val;
     }
 
-    if(prodId==="manual"||prodId==="mapa") entryBuyerKeys.add(bKey);
+    if(prodId==="manual"||prodId==="mapa"){
+      entryBuyerKeys.add(bKey);
+      if(!entryDateInPeriod.has(bKey)||dt<entryDateInPeriod.get(bKey)) entryDateInPeriod.set(bKey,dt);
+    }
 
     if(prodId==="planLucro"||prodId==="curso"){
-      const fe=b.firstManual&&b.firstMapa
-        ?(b.firstManual<b.firstMapa?b.firstManual:b.firstMapa)
-        :(b.firstManual||b.firstMapa);
-      if(fe&&dt>=fe) ascensaoKeys.add(bKey);
+      ascensaoCandidates.push({bKey,dt});
     }
+  }
+
+  // Só conta como ascensão quem também entrou (comprou manual/mapa) DENTRO do período — senão
+  // o numerador (ascensaoKeys) pode ficar maior que o denominador (entryCount), estourando
+  // >100% quando o filtro de data é estreito (mesmo bug corrigido no taxaOrderBump/taxaAscensao
+  // por-funil).
+  for(const {bKey,dt} of ascensaoCandidates){
+    const fe=entryDateInPeriod.get(bKey);
+    if(fe&&dt>=fe) ascensaoKeys.add(bKey);
   }
 
   const entryCount=entryBuyerKeys.size;
@@ -2983,11 +3050,12 @@ function render(){
     return;
   }
   const isSessao=S.currentFunil==="sessao";
-  if(S.currentPage==="principal") isSessao?renderPrincipalSessao():renderPrincipal();
-  else if(S.currentPage==="trafego") isSessao?renderTrafegoSessao():renderTrafego();
-  else if(S.currentPage==="anuncios") isSessao?renderAnunciosSessao():renderAnuncios();
+  const isDist=S.currentFunil==="dist";
+  if(S.currentPage==="principal") isDist?renderPrincipalDist():(isSessao?renderPrincipalSessao():renderPrincipal());
+  else if(S.currentPage==="trafego") isDist?renderTrafegoDist():(isSessao?renderTrafegoSessao():renderTrafego());
+  else if(S.currentPage==="anuncios") isDist?renderAnunciosDist():(isSessao?renderAnunciosSessao():renderAnuncios());
   else if(S.currentPage==="funil") isSessao?renderFunilSessao():renderFunil();
-  else if(S.currentPage==="resumo") isSessao?renderResumoSessao():renderResumo();
+  else if(S.currentPage==="resumo") isDist?renderResumoDist():(isSessao?renderResumoSessao():renderResumo());
   else if(S.currentPage==="geral-principal") renderGeralPrincipal();
   else if(S.currentPage==="geral-funil") renderGeralFunil();
 }
@@ -4502,6 +4570,712 @@ function copyResumoMM(){
   }).catch(()=>alert("Selecione o texto manualmente."));
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// Distribuição de Conteúdo (Seguidores) — funil independente, mesma planilha
+// da Sessão Estratégica (SHEET_ID), aba "Base Seguidores".
+//
+// A aba tem um problema de origem: o relatório automático que a alimenta às
+// vezes concatena, dentro da MESMA aba, blocos de dados com layouts de coluna
+// diferentes (linhas em branco + uma nova linha de cabeçalho no meio dos
+// dados — visto a partir de ~linha 950, e o layout desse 2º bloco já mudou
+// mais de uma vez). Por isso o parser abaixo NÃO assume cabeçalho único
+// (diferente do parseSheet() usado no resto do projeto): ele varre a aba
+// inteira linha a linha, reconhece toda vez que aparece uma nova linha de
+// cabeçalho (coluna A = "Dia" ou "Date") e remapeia as colunas a partir dali,
+// por NOME de coluna (não por posição fixa) — resiliente a reordenar/
+// adicionar/remover colunas extras (Moeda, Link, datas de relatório etc.).
+// ══════════════════════════════════════════════════════════════════════════
+
+const META_CPS=0.50; // meta de Custo por novo seguidor
+
+// Nome de coluna (de qualquer um dos formatos já vistos na aba) → campo canônico
+// interno. Ordem importa: checagens de adset/campanha vêm antes da de "ad", porque
+// "Identificação do conjunto de anúncios" também contém a palavra "anúncio".
+function matchSegField(h){
+  h=(h||"").trim();
+  if(!h) return null;
+  if(/^dia$|^date$/i.test(h)) return "date";
+  if(/nome do conjunto/i.test(h)) return "adsetName";
+  if(/nome da campanha|^campaign name$/i.test(h)) return "campName";
+  if(/nome do an.ncio|^ad name$/i.test(h)) return "adName";
+  if(/identifica.*conjunto|^adset id$/i.test(h)) return "adsetId";
+  if(/identifica.*campanha|^campaign id$/i.test(h)) return "campId";
+  if(/identifica.*an.ncio|^ad id$/i.test(h)) return "adId";
+  if(/valor usado|^spend/i.test(h)) return "spend";
+  if(/cliques no link|action link clicks/i.test(h)) return "clicks";
+  if(/impress/i.test(h)) return "impressions";
+  if(/alcance|^reach/i.test(h)) return "reach";
+  if(/visitas ao perfil|profile visits/i.test(h)) return "profileVisits";
+  if(/seguidores/i.test(h)) return "novosSeguidores";
+  return null; // colunas ignoradas: Moeda, Instagram Permalink URL, Link, datas de relatório...
+}
+
+// "R$ 9,50" (formato com header em inglês) ou "1.85" (formato com header em português,
+// decimal americano sem separador de milhar) → número.
+function parseValorSeg(s){
+  if(!s||s==="-") return 0;
+  s=String(s).trim();
+  if(!s) return 0;
+  if(s.includes("R$")||s.includes(",")) return parseBRL(s);
+  return parseFloat(s)||0;
+}
+
+// Varre a aba (array de arrays, rawRows[0] = cabeçalho da linha 1) detectando
+// blocos com cabeçalhos diferentes ao longo do caminho.
+function parseSeguidoresRows(rawRows){
+  let colMap=null;
+  function isHeaderRow(row){
+    const a=(row&&row[0]||"").trim();
+    return /^dia$|^date$/i.test(a);
+  }
+  function isBlank(row){
+    return !row || row.every(c=>!c || !String(c).trim());
+  }
+  const out=[];
+  for(let i=0;i<rawRows.length;i++){
+    const row=rawRows[i];
+    if(isBlank(row)) continue;
+    if(isHeaderRow(row)){ colMap=row.map(matchSegField); continue; }
+    if(!colMap) continue;
+    const rec={};
+    for(let c=0;c<row.length;c++){
+      const f=colMap[c]; if(!f) continue;
+      rec[f]=(row[c]==null?"":String(row[c]).trim());
+    }
+    if(!rec.date) continue;
+    out.push(rec);
+  }
+  return out;
+}
+
+function toSegMetric(rec){
+  return {
+    date: toISO(rec.date),
+    spend: parseValorSeg(rec.spend),
+    clicks: parseInt(rec.clicks,10)||0,
+    impressions: parseInt(rec.impressions,10)||0,
+    reach: parseInt(rec.reach,10)||0,
+    adId: rec.adId||"",
+    adName: rec.adName||"",
+    adsetId: rec.adsetId||"",
+    adsetName: rec.adsetName||"",
+    campId: rec.campId||"",
+    campName: rec.campName||"",
+    profileVisits: parseInt(rec.profileVisits,10)||0,
+    novosSeguidores: parseInt(rec.novosSeguidores,10)||0,
+  };
+}
+
+function processDataDist(rawRows){
+  const recs=parseSeguidoresRows(rawRows).map(toSegMetric).filter(r=>r.date);
+  const daily={}, byAd={}, byAdByDate={}, byCamp={}, byCampByDate={};
+  const blank=()=>({spend:0,clicks:0,impressions:0,reach:0,profileVisits:0,seguidores:0});
+  for(const r of recs){
+    if(!daily[r.date]) daily[r.date]=blank();
+    const d=daily[r.date];
+    d.spend+=r.spend; d.clicks+=r.clicks; d.impressions+=r.impressions; d.reach+=r.reach;
+    d.profileVisits+=r.profileVisits; d.seguidores+=r.novosSeguidores;
+
+    if(r.adId){
+      if(!byAd[r.adId]) byAd[r.adId]={...blank(),adName:r.adName,campName:r.campName};
+      const a=byAd[r.adId];
+      a.spend+=r.spend; a.clicks+=r.clicks; a.impressions+=r.impressions; a.reach+=r.reach;
+      a.profileVisits+=r.profileVisits; a.seguidores+=r.novosSeguidores;
+      if(r.adName) a.adName=r.adName;
+      if(r.campName) a.campName=r.campName;
+      if(!byAdByDate[r.adId]) byAdByDate[r.adId]={};
+      if(!byAdByDate[r.adId][r.date]) byAdByDate[r.adId][r.date]=blank();
+      const ad=byAdByDate[r.adId][r.date];
+      ad.spend+=r.spend; ad.clicks+=r.clicks; ad.impressions+=r.impressions; ad.reach+=r.reach;
+      ad.profileVisits+=r.profileVisits; ad.seguidores+=r.novosSeguidores;
+    }
+    if(r.campName){
+      if(!byCamp[r.campName]) byCamp[r.campName]=blank();
+      const c=byCamp[r.campName];
+      c.spend+=r.spend; c.clicks+=r.clicks; c.impressions+=r.impressions; c.reach+=r.reach;
+      c.profileVisits+=r.profileVisits; c.seguidores+=r.novosSeguidores;
+      if(!byCampByDate[r.campName]) byCampByDate[r.campName]={};
+      if(!byCampByDate[r.campName][r.date]) byCampByDate[r.campName][r.date]=blank();
+      const cd=byCampByDate[r.campName][r.date];
+      cd.spend+=r.spend; cd.seguidores+=r.novosSeguidores;
+    }
+  }
+  S.dist.daily=daily; S.dist.byAd=byAd; S.dist.byAdByDate=byAdByDate;
+  S.dist.byCamp=byCamp; S.dist.byCampByDate=byCampByDate;
+  S.dist.updated=new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"});
+}
+
+// ── Agregação por período ──────────────────────────────────────────────────
+function getDailyDist(start,end){
+  const out=[];
+  if(!start||!end) return out;
+  let d=start, guard=0;
+  while(d<=end && guard<3660){
+    const m=S.dist.daily[d]||{spend:0,clicks:0,impressions:0,reach:0,profileVisits:0,seguidores:0};
+    out.push({date:d,label:fDate(d),...m,
+      cpc:m.clicks>0?m.spend/m.clicks:0,
+      ctr:m.impressions>0?(m.clicks/m.impressions)*100:0,
+      cpm:m.impressions>0?(m.spend/m.impressions)*1000:0,
+      custoPorVisita:m.profileVisits>0?m.spend/m.profileVisits:0,
+      custoPorSeguidor:m.seguidores>0?m.spend/m.seguidores:0,
+      txConvSeg:m.profileVisits>0?(m.seguidores/m.profileVisits)*100:0,
+    });
+    d=addDays(d,1); guard++;
+  }
+  return out;
+}
+function getTotalsDist(daily){
+  const t=daily.reduce((a,d)=>({
+    spend:a.spend+d.spend, clicks:a.clicks+d.clicks, impressions:a.impressions+d.impressions,
+    reach:a.reach+d.reach, profileVisits:a.profileVisits+d.profileVisits, seguidores:a.seguidores+d.seguidores,
+  }),{spend:0,clicks:0,impressions:0,reach:0,profileVisits:0,seguidores:0});
+  return {...t,
+    cpc:t.clicks>0?t.spend/t.clicks:0,
+    ctr:t.impressions>0?(t.clicks/t.impressions)*100:0,
+    cpm:t.impressions>0?(t.spend/t.impressions)*1000:0,
+    custoPorVisita:t.profileVisits>0?t.spend/t.profileVisits:0,
+    custoPorSeguidor:t.seguidores>0?t.spend/t.seguidores:0,
+    txConvSeg:t.profileVisits>0?(t.seguidores/t.profileVisits)*100:0,
+  };
+}
+function getDayMetricsDist(iso){ return getTotalsDist(getDailyDist(iso,iso)); }
+
+// ── Gráficos (Distribuição) ─────────────────────────────────────────────────
+function drawDualSeg(id,data,cssW,cssH){
+  const ctx=initCanvas(id,cssW,cssH);if(!ctx)return;
+  const P={t:14,r:58,b:28,l:64};
+  const cW=cssW-P.l-P.r,cH=cssH-P.t-P.b;
+  const lVals=data.map(d=>d.spend||0);
+  const rVals=data.map(d=>d.custoPorSeguidor||0);
+  const lMax=Math.max(...lVals,0.01)*1.15;
+  const rMax=Math.max(...rVals,0.01)*1.4;
+  const xP=i=>P.l+(data.length>1?i/(data.length-1):0.5)*cW;
+  const yPL=v=>P.t+cH-(v/lMax)*cH;
+  const yPR=v=>P.t+cH-(v/rMax)*cH;
+  ctx.setLineDash([]);
+  for(let i=0;i<=4;i++){
+    const y=P.t+(i/4)*cH;
+    ctx.strokeStyle=GRID_C;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(P.l,y);ctx.lineTo(P.l+cW,y);ctx.stroke();
+    ctx.fillStyle=TICK_C;ctx.font="10px 'DM Mono',monospace";
+    ctx.textAlign="right";ctx.fillText(fBRLShort(lMax-(i/4)*lMax),P.l-5,y+3.5);
+    ctx.textAlign="left";ctx.fillText("R$"+(rMax-(i/4)*rMax).toFixed(2),P.l+cW+5,y+3.5);
+  }
+  drawLineArea(ctx,xP,yPL,lVals,CHART_INV,true);
+  drawLineArea(ctx,xP,yPR,rVals,CHART_CPV,false);
+  const step=data.length>60?7:data.length>30?3:data.length>14?2:1;
+  ctx.fillStyle=TICK_C;ctx.font="10px 'DM Mono',monospace";ctx.textAlign="center";ctx.setLineDash([]);
+  data.forEach((d,i)=>{if(i%step===0)ctx.fillText(d.label,xP(i),P.t+cH+18);});
+}
+function drawSegBarDist(id,data,cssW,cssH){
+  const ctx=initCanvas(id,cssW,cssH);if(!ctx)return;
+  const P={t:14,r:12,b:28,l:40};
+  const cW=cssW-P.l-P.r,cH=cssH-P.t-P.b;
+  const vals=data.map(d=>d.seguidores||0);
+  const maxV=Math.max(...vals,1)*1.15;
+  const n=data.length;
+  const barW=Math.max(4,Math.min(18,(cW/n)*0.7));
+  const xP=i=>P.l+(n>1?i/(n-1):0.5)*cW;
+  const yP=v=>P.t+cH-(v/maxV)*cH;
+  ctx.setLineDash([]);
+  for(let i=0;i<=4;i++){
+    const y=P.t+(i/4)*cH;
+    ctx.strokeStyle=GRID_C;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(P.l,y);ctx.lineTo(P.l+cW,y);ctx.stroke();
+    ctx.fillStyle=TICK_C;ctx.font="9px 'DM Mono',monospace";ctx.textAlign="right";
+    ctx.fillText(Math.round(maxV-(i/4)*maxV),P.l-4,y+3);
+  }
+  drawBars(ctx,xP,yP,P.t+cH,vals,"#10b981",barW);
+  const step=n>60?7:n>30?3:n>14?2:1;
+  ctx.textAlign="center";
+  vals.forEach((v,i)=>{
+    if(v>0&&(n<=30||i%step===0)){
+      ctx.fillStyle="#e8edf6";
+      ctx.font=`bold ${Math.min(10,Math.max(7,barW))}px 'DM Mono',monospace`;
+      ctx.fillText(v,xP(i),yP(v)-4);
+    }
+  });
+  ctx.fillStyle=TICK_C;ctx.font="9px 'DM Mono',monospace";
+  data.forEach((d,i)=>{if(i%step===0)ctx.fillText(d.label,xP(i),P.t+cH+18);});
+}
+function drawProfileBarDist(id,data,cssW,cssH){
+  const ctx=initCanvas(id,cssW,cssH);if(!ctx)return;
+  const P={t:14,r:12,b:28,l:44};
+  const cW=cssW-P.l-P.r,cH=cssH-P.t-P.b;
+  const vals=data.map(d=>d.profileVisits||0);
+  const maxV=Math.max(...vals,1)*1.15;
+  const n=data.length;
+  const barW=Math.max(4,Math.min(18,(cW/n)*0.7));
+  const xP=i=>P.l+(n>1?i/(n-1):0.5)*cW;
+  const yP=v=>P.t+cH-(v/maxV)*cH;
+  ctx.setLineDash([]);
+  for(let i=0;i<=4;i++){
+    const y=P.t+(i/4)*cH;
+    ctx.strokeStyle=GRID_C;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(P.l,y);ctx.lineTo(P.l+cW,y);ctx.stroke();
+    ctx.fillStyle=TICK_C;ctx.font="9px 'DM Mono',monospace";ctx.textAlign="right";
+    ctx.fillText(Math.round(maxV-(i/4)*maxV),P.l-4,y+3);
+  }
+  drawBars(ctx,xP,yP,P.t+cH,vals,CHART_COLOR,barW);
+  const step=n>60?7:n>30?3:n>14?2:1;
+  ctx.textAlign="center";
+  vals.forEach((v,i)=>{
+    if(v>0&&(n<=30||i%step===0)){
+      ctx.fillStyle="#e8edf6";
+      ctx.font=`bold ${Math.min(10,Math.max(7,barW))}px 'DM Mono',monospace`;
+      ctx.fillText(v,xP(i),yP(v)-4);
+    }
+  });
+  ctx.fillStyle=TICK_C;ctx.font="9px 'DM Mono',monospace";
+  data.forEach((d,i)=>{if(i%step===0)ctx.fillText(d.label,xP(i),P.t+cH+18);});
+}
+
+// ── Render Principal (Distribuição) ─────────────────────────────────────────
+function renderPrincipalDist(){
+  const el=document.getElementById("page-principal");if(!el)return;
+  if(S.dist.error && Object.keys(S.dist.daily).length===0){
+    el.innerHTML=`<div class="hdr" style="margin-bottom:6px"><div><div class="hdr-title">Distribuição de Conteúdo</div></div></div>
+      <div class="err" style="margin-top:24px">⚠️ ${S.dist.error}</div>`;
+    return;
+  }
+  const daily=getDailyDist(S.startDate,S.endDate);
+  const tot=getTotalsDist(daily);
+  el.innerHTML=`
+    <div class="hdr" style="margin-bottom:6px">
+      <div>
+        <div class="hdr-title">Distribuição de Conteúdo — Seguidores</div>
+        <div class="hdr-sub">atualizado em: ${S.dist.updated||"—"}${daily.length>0?` · ${daily.length} dias`:""}</div>
+      </div>
+    </div>
+    ${S.dist.error?`<div class="err">⚠️ ${S.dist.error}</div>`:""}
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:13px;margin-bottom:16px">
+      ${kpiCard("Investimento",fBRL(tot.spend),"","var(--text-strong)")}
+      ${kpiCard("Visitas ao Perfil",tot.profileVisits.toLocaleString("pt-BR"),"","var(--text-strong)")}
+      ${kpiCard("Custo/Visita",tot.custoPorVisita>0?fBRL(tot.custoPorVisita):"—","","var(--text-strong)")}
+      ${kpiCard("Novos Seguidores",tot.seguidores.toLocaleString("pt-BR"),"","var(--text-strong)")}
+      ${kpiCard("Custo/Seguidor",tot.custoPorSeguidor>0?fBRL(tot.custoPorSeguidor):"—",tot.custoPorSeguidor>0?`meta ${fBRL(META_CPS)}`:"",statusColor(tot.custoPorSeguidor,META_CPS,false),false,tot.custoPorSeguidor||null,false)}
+    </div>
+    <div class="cc" style="margin-bottom:12px;position:relative">
+      <div class="ch">
+        <span class="ct">Investimento × Custo por Seguidor</span>
+        <div class="lg">
+          <span class="li"><span class="ll" style="background:${CHART_INV}"></span>Invest. (esq.)</span>
+          <span class="li"><span class="ll" style="background:${CHART_CPV}"></span>Custo/Seg. (dir.)</span>
+        </div>
+      </div>
+      <div style="position:relative"><canvas id="c-dual-seg"></canvas><div class="tip" id="t-dual-seg"></div></div>
+    </div>
+    <div class="cc" style="margin-bottom:12px;position:relative">
+      <div class="ch">
+        <span class="ct">Volume de Novos Seguidores</span>
+        <div class="lg"><span class="li"><span class="ld" style="background:#10b981"></span>Seguidores/dia</span></div>
+      </div>
+      <div style="position:relative"><canvas id="c-seg-bar"></canvas><div class="tip" id="t-seg-bar"></div></div>
+    </div>
+    <div class="cc" style="position:relative">
+      <div class="ch">
+        <span class="ct">Volume de Visitas ao Perfil</span>
+        <div class="lg"><span class="li"><span class="ld" style="background:${CHART_COLOR}"></span>Visitas/dia</span></div>
+      </div>
+      <div style="position:relative"><canvas id="c-pv-bar"></canvas><div class="tip" id="t-pv-bar"></div></div>
+    </div>
+    <p class="foot">Distribuição de Conteúdo · Base Seguidores (Meta Ads) · Google Sheets API v4</p>`;
+  requestAnimationFrame(()=>{
+    const mW=document.getElementById("c-dual-seg")?.parentElement?.offsetWidth||720;
+    drawDualSeg("c-dual-seg",daily,mW,230);
+    drawSegBarDist("c-seg-bar",daily,mW,180);
+    drawProfileBarDist("c-pv-bar",daily,mW,180);
+    setupTip("c-dual-seg","t-dual-seg",daily,[{key:"spend",color:CHART_INV,name:"Investimento"},{key:"custoPorSeguidor",color:CHART_CPV,name:"Custo/Seg."}]);
+    setupTip("c-seg-bar","t-seg-bar",daily,[{key:"seguidores",color:"#10b981",name:"Seguidores",fmt:v=>Math.round(v).toString()}],40,12);
+    setupTip("c-pv-bar","t-pv-bar",daily,[{key:"profileVisits",color:CHART_COLOR,name:"Visitas",fmt:v=>Math.round(v).toString()}],40,12);
+  });
+}
+
+// ── Render Tráfego (Distribuição) ───────────────────────────────────────────
+function renderTrafegoDist(){
+  const el=document.getElementById("page-trafego");if(!el)return;
+  const today=todayISO();
+  const todayM=getDayMetricsDist(today);
+  const p3Start=subDays(today,3),p3End=subDays(today,1);
+  const p3Tot=getTotalsDist(getDailyDist(p3Start,p3End));
+  const daily=getDailyDist(S.tStartDate,S.tEndDate);
+
+  const METRICS=[
+    {key:"spend",lbl:"Investimento",fmt:fBRL,meta:null,higher:null},
+    {key:"custoPorVisita",lbl:"Custo/Visita",fmt:fBRL,meta:null,higher:null},
+    {key:"custoPorSeguidor",lbl:"Custo/Seguidor",fmt:fBRL,meta:META_CPS,higher:false},
+    {key:"cpc",lbl:"CPC",fmt:fBRL,meta:null,higher:null},
+    {key:"ctr",lbl:"CTR",fmt:fPct,meta:null,higher:null},
+    {key:"cpm",lbl:"CPM",fmt:fBRL,meta:null,higher:null},
+  ];
+  function metaSub(m){ if(!m.meta) return ""; return `Meta: ${m.fmt(m.meta)}`; }
+  function metricsRow(dataObj){
+    return METRICS.map(m=>{
+      const rawVal=dataObj[m.key]||0;
+      const color=m.meta?statusColor(rawVal,m.meta,m.higher):"var(--text-strong)";
+      const bord=m.meta?statusBorder(rawVal,m.meta,m.higher):"var(--border)";
+      return `<div class="kc" style="padding:12px 14px;border-color:${bord}">
+        <div class="kc-lbl">${m.lbl}</div>
+        <div class="kc-val" style="color:${color};font-size:17px">${m.fmt(rawVal)}</div>
+        ${m.meta?`<div class="kc-sub">${metaSub(m)}</div>`:""}
+      </div>`;
+    }).join("");
+  }
+  function overlayBtn(key,which,label){
+    const on=S.overlays[key][which];
+    const color=which==="inv"?CHART_INV:CHART_CPV;
+    return `<button class="btn-overlay${on?" on":""}"
+      style="${on?`border-color:${color};color:${color};background:${color}18`:""}"
+      onclick="toggleOverlay('${key}','${which}')">${label}</button>`;
+  }
+  const CHART_CONFIGS=[
+    {key:"custoPorVisita",lbl:"Custo/Visita",fmt:fBRL,meta:null,metaLbl:""},
+    {key:"custoPorSeguidor",lbl:"Custo/Seguidor",fmt:fBRL,meta:META_CPS,metaLbl:`Meta ${fBRL(META_CPS)}`},
+    {key:"cpc",lbl:"CPC",fmt:fBRL,meta:null,metaLbl:""},
+    {key:"ctr",lbl:"CTR",fmt:fPct,meta:null,metaLbl:""},
+    {key:"cpm",lbl:"CPM",fmt:fBRL,meta:null,metaLbl:""},
+    {key:"txConvSeg",lbl:"Tx Conv. Visita→Seguidor",fmt:fPct,meta:null,metaLbl:""},
+  ];
+  function tChart(c){
+    return `<div class="cc" style="position:relative">
+      <div class="ch">
+        <span class="ct">${c.lbl}</span>
+        <div style="display:flex;align-items:center;gap:12px">
+          ${c.metaLbl?`<span style="font-size:10px;color:var(--hint)">${c.metaLbl}</span>`:""}
+          <div class="overlay-btns">
+            ${overlayBtn(c.key,"inv","+ Invest.")}
+          </div>
+        </div>
+      </div>
+      <div style="position:relative">
+        <canvas id="tc-dist-${c.key}"></canvas>
+        <div class="tip" id="tt-dist-${c.key}"></div>
+      </div>
+    </div>`;
+  }
+  el.innerHTML=`
+    <div class="hdr" style="margin-bottom:6px">
+      <div>
+        <div class="hdr-title">Distribuição de Conteúdo — Métricas de Tráfego</div>
+        <div class="hdr-sub">atualizado em: ${S.dist.updated||"—"}</div>
+      </div>
+    </div>
+    ${S.dist.error?`<div class="err">⚠️ ${S.dist.error}</div>`:""}
+    <div class="section-lbl">Hoje — ${fDateBR(today)}</div>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
+      ${metricsRow(todayM)}
+    </div>
+    <div class="section-lbl">Últimos 3 dias — ${fDateBR(p3Start)} a ${fDateBR(p3End)}</div>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px">
+      ${metricsRow(p3Tot)}
+    </div>
+    <div class="charts-2x3">
+      ${CHART_CONFIGS.map(c=>tChart(c)).join("")}
+    </div>
+    <p class="foot">Distribuição de Conteúdo · Base Seguidores (Meta Ads) · Google Sheets API v4</p>`;
+  requestAnimationFrame(()=>{
+    const sW=document.getElementById(`tc-dist-${CHART_CONFIGS[0].key}`)?.parentElement?.offsetWidth||500;
+    CHART_CONFIGS.forEach(c=>{
+      const ov=S.overlays[c.key]||{inv:false,cpv:false};
+      drawChartWithOverlay(`tc-dist-${c.key}`,daily,c.key,c.fmt,c.meta,c.metaLbl,ov.inv,false,sW,170);
+      const tipLines=[{key:c.key,color:CHART_COLOR,name:c.lbl,fmt:c.fmt}];
+      if(ov.inv) tipLines.push({key:"spend",color:CHART_INV,name:"Investimento",fmt:fBRL});
+      setupTip(`tc-dist-${c.key}`,`tt-dist-${c.key}`,daily,tipLines,52,ov.inv?52:12);
+    });
+  });
+}
+
+// ── Render Campanhas/Anúncios (Distribuição) ────────────────────────────────
+function buildAdRowsDist(start,end){
+  const rows=[];
+  for(const [adId,meta] of Object.entries(S.dist.byAd)){
+    const byDate=S.dist.byAdByDate[adId]||{};
+    let spend=0,clicks=0,impressions=0,reach=0,profileVisits=0,seguidores=0;
+    for(const [d,v] of Object.entries(byDate)){
+      if(d>=start&&d<=end){
+        spend+=v.spend; clicks+=v.clicks; impressions+=v.impressions; reach+=v.reach;
+        profileVisits+=v.profileVisits; seguidores+=v.seguidores;
+      }
+    }
+    if(spend===0&&clicks===0&&impressions===0) continue;
+    rows.push({
+      adId, adName:meta.adName||adId, campName:meta.campName||"—",
+      spend,clicks,impressions,reach,profileVisits,seguidores,
+      cpc:clicks>0?spend/clicks:0,
+      ctr:impressions>0?(clicks/impressions)*100:0,
+      cpm:impressions>0?(spend/impressions)*1000:0,
+      custoPorVisita:profileVisits>0?spend/profileVisits:0,
+      custoPorSeguidor:seguidores>0?spend/seguidores:0,
+    });
+  }
+  return rows;
+}
+function sortAnunciosDist(col){
+  if(S.dist.aSort.col===col) S.dist.aSort.dir=S.dist.aSort.dir==="asc"?"desc":"asc";
+  else {S.dist.aSort.col=col;S.dist.aSort.dir="desc";}
+  renderAnunciosDist();
+}
+function renderAnunciosDist(){
+  const el=document.getElementById("page-anuncios");if(!el)return;
+  const rows=buildAdRowsDist(S.aStartDate,S.aEndDate);
+  const {col,dir}=S.dist.aSort;
+  rows.sort((a,b)=>{
+    const av=a[col]||0, bv=b[col]||0;
+    if(typeof av==="string") return dir==="asc"?av.localeCompare(bv):bv.localeCompare(av);
+    return dir==="asc"?av-bv:bv-av;
+  });
+  const tot=rows.reduce((a,r)=>({
+    spend:a.spend+r.spend,clicks:a.clicks+r.clicks,impressions:a.impressions+r.impressions,
+    profileVisits:a.profileVisits+r.profileVisits,seguidores:a.seguidores+r.seguidores,
+  }),{spend:0,clicks:0,impressions:0,profileVisits:0,seguidores:0});
+
+  function thRow(c,lbl){
+    const active=col===c;
+    const arrow=active?(dir==="asc"?" ↑":" ↓"):" ↕";
+    return `<th onclick="sortAnunciosDist('${c}')" style="padding:10px 14px;text-align:right;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${active?"var(--text)":"var(--hint)"};cursor:pointer;user-select:none;border-bottom:1px solid var(--border);white-space:nowrap">${lbl}<span style="color:${active?"#60a5fa":"var(--hint)"};font-size:9px;margin-left:3px">${arrow}</span></th>`;
+  }
+
+  el.innerHTML=`
+    <div class="hdr" style="margin-bottom:6px">
+      <div>
+        <div class="hdr-title">Distribuição de Conteúdo — Campanhas/Anúncios</div>
+        <div class="hdr-sub">atualizado em: ${S.dist.updated||"—"} · ${rows.length} anúncios</div>
+      </div>
+    </div>
+    ${S.dist.error?`<div class="err">⚠️ ${S.dist.error}</div>`:""}
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:13px;margin-bottom:20px">
+      <div class="kc"><div class="kc-lbl">Investimento</div><div class="kc-val" style="font-size:18px">${fBRL(tot.spend)}</div></div>
+      <div class="kc"><div class="kc-lbl">Visitas ao Perfil</div><div class="kc-val" style="font-size:18px">${tot.profileVisits}</div></div>
+      <div class="kc"><div class="kc-lbl">Novos Seguidores</div><div class="kc-val" style="font-size:18px">${tot.seguidores}</div></div>
+      <div class="kc"><div class="kc-lbl">Custo/Visita</div><div class="kc-val" style="font-size:18px">${tot.profileVisits>0?fBRL(tot.spend/tot.profileVisits):"—"}</div></div>
+      <div class="kc" style="border-color:${statusBorder(tot.seguidores>0?tot.spend/tot.seguidores:0,META_CPS,false)}"><div class="kc-lbl">Custo/Seguidor</div><div class="kc-val" style="color:${statusColor(tot.seguidores>0?tot.spend/tot.seguidores:0,META_CPS,false)};font-size:18px">${tot.seguidores>0?fBRL(tot.spend/tot.seguidores):"—"}</div><div class="kc-sub">meta ${fBRL(META_CPS)}</div></div>
+    </div>
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:20px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead>
+          <tr>
+            <th style="padding:10px 14px;text-align:left;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--hint);border-bottom:1px solid var(--border)">Anúncio</th>
+            <th style="padding:10px 14px;text-align:left;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--hint);border-bottom:1px solid var(--border)">Campanha</th>
+            ${thRow("spend","Investimento")}
+            ${thRow("clicks","Cliques")}
+            ${thRow("cpc","CPC")}
+            ${thRow("ctr","CTR")}
+            ${thRow("cpm","CPM")}
+            ${thRow("profileVisits","Visitas")}
+            ${thRow("custoPorVisita","Custo/Visita")}
+            ${thRow("seguidores","Seguidores")}
+            ${thRow("custoPorSeguidor","Custo/Seguidor")}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r=>`
+          <tr style="border-bottom:1px solid var(--border);transition:background .1s" onmouseover="this.style.background='rgba(255,255,255,.025)'" onmouseout="this.style.background='transparent'">
+            <td style="padding:10px 14px;text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.adName}">${r.adName}</td>
+            <td style="padding:10px 14px;text-align:left;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)" title="${r.campName}">${r.campName}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)">${fBRL(r.spend)}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)">${r.clicks}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)">${fBRL(r.cpc)}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)">${fPct(r.ctr)}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)">${fBRL(r.cpm)}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)">${r.profileVisits}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)">${r.custoPorVisita>0?fBRL(r.custoPorVisita):"—"}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text);font-weight:600">${r.seguidores}</td>
+            <td style="padding:10px 14px;text-align:right;font-family:'JetBrains Mono',monospace;color:${statusColor(r.custoPorSeguidor,META_CPS,false)};font-weight:600">${r.custoPorSeguidor>0?fBRL(r.custoPorSeguidor):"—"}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+    <p class="foot">Distribuição de Conteúdo · Base Seguidores (Meta Ads) · Google Sheets API v4</p>`;
+}
+
+// ── Resumo diário (Distribuição de Conteúdo) ────────────────────────────────
+// Modelo exato pedido pelo Cristiano: meta de R$0,50 no Custo por novo seguidor
+// (com emoji de grading), CPC/CTR/CPM por bloco, e comparação com "plan" (meta
+// manual) em 2 pares editáveis — "plan até hj" (cumulativo, aparece no bloco
+// Total) e "plan diário" (aparece igual em Ontem e em Hoje, já que na prática é
+// a mesma meta batida por dia).
+function renderResumoDist(){
+  const el=document.getElementById("page-resumo");if(!el)return;
+  const today=todayISO(), yest=yesterdayISO();
+  const start=S.startDate||today, end=S.endDate||today;
+
+  const tot=getTotalsDist(getDailyDist(start,end));
+  const ontem=getTotalsDist(getDailyDist(yest,yest));
+  const hojeBase=getTotalsDist(getDailyDist(today,today));
+  const hoje={...hojeBase};
+  if(S.dist.manualSpendHoje!==null){
+    hoje.spend=S.dist.manualSpendHoje;
+    hoje.custoPorSeguidor=hoje.seguidores>0?hoje.spend/hoje.seguidores:0;
+    hoje.custoPorVisita=hoje.profileVisits>0?hoje.spend/hoje.profileVisits:0;
+  }
+  // Propaga a diferença do investimento manual de hoje pro Total, se hoje estiver no período.
+  if(S.dist.manualSpendHoje!==null && today>=start && today<=end){
+    const delta=S.dist.manualSpendHoje-hojeBase.spend;
+    tot.spend+=delta;
+    tot.custoPorSeguidor=tot.seguidores>0?tot.spend/tot.seguidores:0;
+    tot.custoPorVisita=tot.profileVisits>0?tot.spend/tot.profileVisits:0;
+  }
+
+  function fDM(iso){if(!iso)return"—";const[,m,d]=iso.split("-");return`${d}/${m}`;}
+  const dateLabel=start===end?fDM(start):`${fDM(start)} a ${fDM(end)}`;
+  function fBRLR(n){ return "R$ "+(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function fPlanBRL(n){ return "R$ "+Math.round(n||0).toLocaleString("pt-BR"); }
+  function fPlanInt(n){ return Math.round(n||0).toLocaleString("pt-BR"); }
+
+  function blockText(label,m,planLbl,planInv,planSeg){
+    const cpsE=em(m.custoPorSeguidor,META_CPS,false);
+    const lines=[
+`*${label}*`,
+``,
+`Investimento:\t${fBRLR(m.spend)}${planInv!=null?`\t(${planLbl}: ${fPlanBRL(planInv)} )`:""}`,
+`Visitas ao perfil:\t${m.profileVisits}`,
+`Custo por visita ao perfil:\t${m.profileVisits>0?fBRLR(m.custoPorVisita):"—"}`,
+``,
+`Novos seguidores:\t${m.seguidores}${planSeg!=null?`\t(${planLbl}: ${fPlanInt(planSeg)} )`:""}`,
+`Custo por novo seguidor:\t${m.seguidores>0?fBRLR(m.custoPorSeguidor):"—"}\t${cpsE} Meta: ${fBRLR(META_CPS)}`,
+``,
+`Tx conv visitantes para seguidores:\t${(m.txConvSeg||0).toFixed(1)}%`,
+``,
+`CPC:\t${fBRLR(m.cpc)}`,
+`CTR:\t${(m.ctr||0).toFixed(2)}%`,
+`CPM:\t${fBRLR(m.cpm)}`,
+    ];
+    return lines.join("\n");
+  }
+
+  const resumoText=
+`*Resumo consolidado - Distribuição de conteúdo*\t\t
+
+_${dateLabel}_\t\t
+
+${blockText("-> Total",tot,"plan até hj",S.dist.planAteHoje,S.dist.planAteHojeSeg)}
+
+${blockText("-> Ontem",ontem,"plan ontem",S.dist.planDiario,S.dist.planDiarioSeg)}
+
+${blockText("-> Hoje",hoje,"plan hj",S.dist.planDiario,S.dist.planDiarioSeg)}`;
+
+  // Visual blocks
+  function row(lbl,val,metaStr,emoji){
+    return `<div style="display:grid;grid-template-columns:220px 1fr auto;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);align-items:center">
+      <span style="color:var(--muted);font-size:12px">${lbl}</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-strong)">${val||"—"}</span>
+      <span style="font-size:13px;min-width:28px;text-align:right">${emoji||""}<span style="font-size:10px;color:var(--hint);margin-left:4px">${metaStr||""}</span></span>
+    </div>`;
+  }
+  function section(label,m,planLbl,planInv,planSeg,isHoje=false){
+    const cpsE=em(m.custoPorSeguidor,META_CPS,false);
+    const isManual=isHoje&&S.dist.manualSpendHoje!==null;
+    const investRow=isHoje?`
+      <div style="display:grid;grid-template-columns:220px 1fr auto;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);align-items:center">
+        <span style="color:var(--muted);font-size:12px">Investimento</span>
+        <input id="manual-spend-input-dist"
+          value="${isManual?(m.spend||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):''}"
+          placeholder="${fBRLR(hojeBase.spend)}"
+          oninput="setManualSpendHojeDist(this.value)"
+          onkeydown="if(event.key==='Enter')this.blur()"
+          style="font-family:'JetBrains Mono',monospace;font-size:12px;color:${isManual?'#fbbf24':'var(--text-strong)'};background:transparent;border:none;border-bottom:1px solid ${isManual?'rgba(251,191,36,.4)':'rgba(255,255,255,.1)'};outline:none;padding:2px 0;width:100%"/>
+        <span style="font-size:13px;min-width:80px;text-align:right">
+          ${isManual?`<button onclick="clearManualSpendHojeDist()" style="font-size:10px;padding:2px 8px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24;border-radius:5px;cursor:pointer;font-family:'DM Sans',sans-serif">↩ Restaurar</button>`:""}
+        </span>
+      </div>`:row("Investimento",fBRLR(m.spend),planInv!=null?`${planLbl}: ${fPlanBRL(planInv)}`:"","");
+    return `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:var(--text-strong);margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">${label}</div>
+      ${investRow}
+      ${row("Visitas ao perfil",m.profileVisits,"","")}
+      ${row("Custo por visita ao perfil",m.profileVisits>0?fBRLR(m.custoPorVisita):"—","","")}
+      <div style="height:10px"></div>
+      ${row("Novos seguidores",m.seguidores,planSeg!=null?`${planLbl}: ${fPlanInt(planSeg)}`:"","")}
+      ${row("Custo por novo seguidor",m.seguidores>0?fBRLR(m.custoPorSeguidor):"—",`meta ${fBRLR(META_CPS)}`,cpsE)}
+      <div style="height:10px"></div>
+      ${row("Tx conv visitantes → seguidores",(m.txConvSeg||0).toFixed(1)+"%","","")}
+      <div style="height:10px"></div>
+      ${row("CPC",fBRLR(m.cpc),"","")}
+      ${row("CTR",(m.ctr||0).toFixed(2)+"%","","")}
+      ${row("CPM",fBRLR(m.cpm),"","")}
+    </div>`;
+  }
+
+  function planInputRow(id,label,val,setter){
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <span style="color:var(--muted);font-size:11px;flex:1">${label}</span>
+      <input id="${id}" value="${val!=null?val:''}" placeholder="—" oninput="${setter}(this.value)"
+        onkeydown="if(event.key==='Enter')this.blur()"
+        style="width:100px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-strong);background:var(--surf);border:1px solid var(--border);border-radius:5px;padding:3px 6px;text-align:right"/>
+    </div>`;
+  }
+  const planEditor=`
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 20px;margin-bottom:14px">
+      <div style="font-size:12px;font-weight:700;color:var(--text-strong);margin-bottom:8px">🎯 Metas (plan)</div>
+      ${planInputRow("plan-ate-hoje-inv","Plan até hj — Investimento",S.dist.planAteHoje,"setPlanAteHojeDist")}
+      ${planInputRow("plan-ate-hoje-seg","Plan até hj — Seguidores",S.dist.planAteHojeSeg,"setPlanAteHojeSegDist")}
+      ${planInputRow("plan-diario-inv","Plan diário — Investimento",S.dist.planDiario,"setPlanDiarioDist")}
+      ${planInputRow("plan-diario-seg","Plan diário — Seguidores",S.dist.planDiarioSeg,"setPlanDiarioSegDist")}
+    </div>`;
+
+  el.innerHTML=`
+    <div class="hdr" style="margin-bottom:16px">
+      <div>
+        <div class="hdr-title">Resumo diário — Distribuição de Conteúdo</div>
+        <div class="hdr-sub">período: ${dateLabel} · ontem: ${fDM(yest)} · hoje: ${fDM(today)}</div>
+      </div>
+      <button onclick="copyResumoDist()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 18px;background:rgba(59,130,246,.18);border:1px solid rgba(96,165,250,.35);color:#93c5fd;border-radius:9px;cursor:pointer;font-size:12px;font-weight:600;font-family:'DM Sans',sans-serif;transition:all .15s">
+        📋 Copiar resumo
+      </button>
+    </div>
+    ${S.dist.error?`<div class="err">⚠️ ${S.dist.error}</div>`:""}
+    <div style="display:grid;grid-template-columns:1fr 420px;gap:20px;align-items:start">
+      <div>
+        ${planEditor}
+        ${section("📶 Total",tot,"plan até hj",S.dist.planAteHoje,S.dist.planAteHojeSeg)}
+        ${section("⬅️ Ontem",ontem,"plan ontem",S.dist.planDiario,S.dist.planDiarioSeg)}
+        ${section("⬇️ Hoje",hoje,"plan hj",S.dist.planDiario,S.dist.planDiarioSeg,true)}
+      </div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;position:sticky;top:70px">
+        <pre id="resumo-preview-dist" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);white-space:pre-wrap;line-height:1.8;margin:0;user-select:all">${resumoText.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</pre>
+      </div>
+    </div>`;
+  el._resumoText=resumoText;
+  requestAnimationFrame(()=>{
+    const fid=document.activeElement?.id;
+    const editableIds=["manual-spend-input-dist","plan-ate-hoje-inv","plan-ate-hoje-seg","plan-diario-inv","plan-diario-seg"];
+    if(editableIds.includes(fid)){
+      const s=document.getElementById(fid);
+      if(s){const l=s.value.length;s.setSelectionRange(l,l);}
+    }
+  });
+}
+function setManualSpendHojeDist(v){
+  const n=parseFloat(String(v).replace(/[R$\s.]/g,"").replace(",","."));
+  S.dist.manualSpendHoje=(isNaN(n)||n<=0)?null:n;
+  renderResumoDist();
+}
+function clearManualSpendHojeDist(){ S.dist.manualSpendHoje=null; renderResumoDist(); }
+function setPlanAteHojeDist(v){
+  const n=parseFloat(String(v).replace(/[R$\s.]/g,"").replace(",","."));
+  S.dist.planAteHoje=(isNaN(n)||n<0)?null:n; renderResumoDist();
+}
+function setPlanAteHojeSegDist(v){
+  const n=parseInt(String(v).replace(/\D/g,""),10);
+  S.dist.planAteHojeSeg=(isNaN(n)||n<0)?null:n; renderResumoDist();
+}
+function setPlanDiarioDist(v){
+  const n=parseFloat(String(v).replace(/[R$\s.]/g,"").replace(",","."));
+  S.dist.planDiario=(isNaN(n)||n<0)?null:n; renderResumoDist();
+}
+function setPlanDiarioSegDist(v){
+  const n=parseInt(String(v).replace(/\D/g,""),10);
+  S.dist.planDiarioSeg=(isNaN(n)||n<0)?null:n; renderResumoDist();
+}
+function copyResumoDist(){
+  const el=document.getElementById("page-resumo");
+  const text=el?._resumoText||"";if(!text)return;
+  navigator.clipboard.writeText(text).then(()=>{
+    const btns=document.querySelectorAll("button");
+    btns.forEach(b=>{if(b.textContent.includes("Copiar resumo")){const orig=b.innerHTML;b.innerHTML="✓ Copiado!";setTimeout(()=>{b.innerHTML=orig;},1800);}});
+  }).catch(()=>alert("Selecione o texto manualmente."));
+}
 
 render();
 loadData();
