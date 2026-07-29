@@ -553,7 +553,7 @@ async function fetchRetry429(url, maxRetries=5){
 // fetchSheetRows() pra Sessão Estratégica — só que aqui via API REST v4 (com API key), não
 // gviz, pra manter o mesmo formato de resposta ({values:[[...]]}) que o resto do código
 // (Manual/Mapa/Vendas/Distribuição) já espera.
-async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=3000, parallel=3){
+async function fetchSheetPaged(sheetId, tabName, apiKey, blockSize=6000, parallel=3){
   const base=`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/`;
   const enc=encodeURIComponent(tabName);
   const headRes=await fetchRetry429(`${base}${enc}!A1:ZZ1?key=${apiKey}`);
@@ -1694,61 +1694,12 @@ function renderAnuncios(){
   // cruzando pelo Ad ID
   function buildAdRows(start,end,allowedAdIds){
     const dd=D();
-    const currentFunil=S.currentFunil;
-    const principalId=currentFunil==="mapa"?"mapa":"manual";
-
-    // Passo 0: mapa de identidades unificado (email + cpf + tel → chave canônica)
-    // Garante que o mesmo comprador é reconhecido mesmo usando campos diferentes em compras distintas
-    const identMap=new Map();
-    function getIdKeys(r){
-      const ks=[];
-      const em=(r["Email"]||"").toLowerCase().trim();
-      const cpf=(r["CPF Comprador"]||"").replace(/[^\d]/g,"");
-      const tel=(r["Telefone"]||"").replace(/[^\d]/g,"");
-      if(em)  ks.push("e:"+em);
-      if(cpf) ks.push("c:"+cpf);
-      if(tel) ks.push("t:"+tel);
-      return ks;
-    }
-    for(const r of dd.funilRows){
-      const ks=getIdKeys(r); if(!ks.length) continue;
-      let canonical=null;
-      for(const k of ks){ if(identMap.has(k)){canonical=identMap.get(k);break;} }
-      if(!canonical) canonical=ks[0];
-      for(const k of ks) identMap.set(k,canonical);
-    }
-    function getCanonical(r){
-      const ks=getIdKeys(r);
-      for(const k of ks){ if(identMap.has(k)) return identMap.get(k); }
-      return ks[0]||null;
-    }
-
-    // Passo A: adId → Set de eventos de compra (canonical+data) do produto principal
-    // Usa chave canonical+data (igual ao dedup de vendasByAdDate) para alinhar os dois lados
-    const adBuyersMap=new Map();  // adId → Set de eventKeys ("canonical|date")
-    for(const r of dd.funilRows){
-      const dt=toISO(r["Data da compra"]||"")||"";
-      if(dt<start||dt>end) continue;
-      if((r["Status da compra"]||"").trim()!=="Paga") continue;
-      if(classifyProduct(r["Nome do produto"]||"",currentFunil)!==principalId) continue;
-      const adId=extractAdId(r["Ad Id"]||""); if(!adId) continue;
-      const key=getCanonical(r); if(!key) continue;
-      const eventKey=key+"|"+dt;
-      if(!adBuyersMap.has(adId)) adBuyersMap.set(adId,new Set());
-      adBuyersMap.get(adId).add(eventKey);
-    }
-
-    // Passo B: evento (canonical+data) → totalGasto naquele dia (todos os produtos Paga)
-    const eventTotalSpent=new Map();
-    for(const r of dd.funilRows){
-      const dt=toISO(r["Data da compra"]||"")||"";
-      if(dt<start||dt>end) continue;
-      if((r["Status da compra"]||"").trim()!=="Paga") continue;
-      const key=getCanonical(r); if(!key) continue;
-      const eventKey=key+"|"+dt;
-      const val=parseBRL(r["Valor do produto"]||"0");
-      eventTotalSpent.set(eventKey,(eventTotalSpent.get(eventKey)||0)+val);
-    }
+    // Identidade de comprador (email/cpf/telefone → canônico), adBuyersMap (adId → eventos de
+    // compra do produto principal) e eventTotalSpent (evento → receita total naquele dia) já
+    // foram calculados UMA VEZ no escopo externo de renderAnuncios() (_adBuyersMap0/
+    // _eventTotalSpent0) — reaproveita aqui em vez de recalcular tudo de novo (isso rodava em
+    // dobro a cada render, iterando dd.funilRows inteiro múltiplas vezes desnecessariamente).
+    const adBuyersMap=_adBuyersMap0, eventTotalSpent=_eventTotalSpent0;
 
     const rows=[];
     for(const [advCode,meta] of Object.entries(dd.metaByAd)){
@@ -1994,7 +1945,8 @@ function renderAnuncios(){
     const lines=[`*Melhores ads*`,"",`_${dateLabelA}_`,""];
     for(const r of selAdRows){
       const cpvE=em(r.cpv,META_CPV,false), cpcE=em(r.cpc,METAS_T.cpc.val,false),
-            ctrE=em(r.ctr,METAS_T.ctr.val,true), cpmE=em(r.cpm,METAS_T.cpm.val,false);
+            ctrE=em(r.ctr,METAS_T.ctr.val,true), cpmE=em(r.cpm,METAS_T.cpm.val,false),
+            ticketE=em(r.ticket,META_TICKET,true), roasE=em(r.roas,META_ROAS,true);
       lines.push(`Nome do ad ⤵️`);
       lines.push(r.advCode);
       if(r.igUrl) lines.push(r.igUrl);
@@ -2006,6 +1958,9 @@ function renderAnuncios(){
       lines.push(`CTR:\t${fPct(r.ctr)}\t${ctrE} Meta: ${METAS_T.ctr.val}%`);
       lines.push(`CPM:\t${fBRL(r.cpm)}\t${cpmE} Meta: ${fBRL(METAS_T.cpm.val)}`);
       lines.push(``);
+      lines.push(`Ticket médio front:\t${r.qtd>0?fBRL(r.ticket):"—"}\t${r.qtd>0?ticketE:""} Meta: ${fBRL(META_TICKET)}`);
+      lines.push(`ROAS:\t${r.roas>0?r.roas.toFixed(2)+"x":"—"}\t${r.roas>0?roasE:""} Meta: ${META_ROAS.toFixed(2)}x`);
+      lines.push(`------------------`);
     }
     adResumoTextMM=lines.join("\n");
   }
@@ -2405,24 +2360,42 @@ function buildFunilData(rows, start, end, funil){
 
   // Mapeia comprador -> conjunto de produtos comprados com data
   // Estrutura: {keys: Set, products: [{id, date, valor, status}]}
-  const buyers = new Map(); // normalizedKey -> buyer obj
+  // Identidade de comprador via Union-Find (O(n) com path compression) em vez do scan linear
+  // sobre TODOS os compradores já vistos a cada linha (O(n²) — pra funis com muitas linhas de
+  // venda isso ficava perceptivelmente lento toda vez que a página Métricas do Funil ou o Resumo
+  // diário renderizavam, já que buildFunilData() roda de novo a cada render). Union-Find também
+  // resolve corretamente o caso de duas compras "descobrirem" depois que pertencem ao mesmo
+  // comprador (ex.: compra 1 com e-mail+CPF, compra 2 só com CPF+telefone, compra 3 só com
+  // telefone) — o scan linear antigo não garantia isso quando a mesma pessoa já tinha 2
+  // "buyers" distintos criados antes da linha que finalmente cruza os dois.
+  const _parentUF=new Map();
+  function _findUF(k){
+    let root=k;
+    while(_parentUF.has(root) && _parentUF.get(root)!==root) root=_parentUF.get(root);
+    let cur=k;
+    while(_parentUF.has(cur) && _parentUF.get(cur)!==root){ const nxt=_parentUF.get(cur); _parentUF.set(cur,root); cur=nxt; }
+    return root;
+  }
+  function _unionUF(a,b){
+    const ra=_findUF(a), rb=_findUF(b);
+    if(ra!==rb) _parentUF.set(ra,rb);
+  }
+  for(const r of allRows){
+    if(!classifyProduct(r["Nome do produto"],f)) continue;
+    const keys=buyerKey(r).filter(Boolean);
+    if(!keys.length) continue;
+    for(const k of keys){ if(!_parentUF.has(k)) _parentUF.set(k,k); }
+    for(let i=1;i<keys.length;i++) _unionUF(keys[0],keys[i]);
+  }
+
+  const buyers = new Map(); // chave canônica (raiz do union-find) -> buyer obj
 
   function getOrCreate(r){
-    const keys = buyerKey(r);
-    // procura buyer existente que compartilhe pelo menos 1 chave
-    for(const [k,b] of buyers){
-      for(const key of keys){
-        if(key && b.keys.has(key)){
-          // adiciona as novas keys a esse buyer
-          keys.forEach(k2=>{ if(k2) b.keys.add(k2); });
-          return b;
-        }
-      }
-    }
-    // novo buyer
-    const b={keys:new Set(keys.filter(Boolean)), products:[]};
-    const mapKey = keys[0] || Math.random().toString();
-    buyers.set(mapKey, b);
+    const keys = buyerKey(r).filter(Boolean);
+    const canonical = keys.length ? _findUF(keys[0]) : Symbol();
+    let b = buyers.get(canonical);
+    if(!b){ b={keys:new Set(keys), products:[]}; buyers.set(canonical,b); }
+    else keys.forEach(k=>b.keys.add(k));
     return b;
   }
 
@@ -2941,8 +2914,19 @@ function buildAnaContent(fd, buyers){
   // Re-constrói buyers para o período desta aba se diferente do funil
   let ana_buyers=buyers;
   if(start||end){
-    ana_buyers=new Map();
-    function getOrCreate2(r){
+    // Union-Find (O(n)) em vez do scan linear sobre todos os buyers já vistos (O(n²)) — mesmo
+    // ajuste de buildFunilData, necessário aqui porque essa aba re-agrupa compradores do zero
+    // sempre que tem filtro de período próprio.
+    const _parentUF2=new Map();
+    function _findUF2(k){
+      let root=k;
+      while(_parentUF2.has(root) && _parentUF2.get(root)!==root) root=_parentUF2.get(root);
+      let cur=k;
+      while(_parentUF2.has(cur) && _parentUF2.get(cur)!==root){ const nxt=_parentUF2.get(cur); _parentUF2.set(cur,root); cur=nxt; }
+      return root;
+    }
+    function _unionUF2(a,b){ const ra=_findUF2(a), rb=_findUF2(b); if(ra!==rb) _parentUF2.set(ra,rb); }
+    function keysOf(r){
       const em=(r["Email"]||"").toLowerCase().trim();
       const cpf=(r["CPF Comprador"]||"").replace(/[^\d]/g,"");
       const tel=(r["Telefone"]||"").replace(/[^\d]/g,"");
@@ -2950,12 +2934,23 @@ function buildAnaContent(fd, buyers){
       if(em)  keys.push("e:"+em);
       if(cpf) keys.push("c:"+cpf);
       if(tel) keys.push("t:"+tel);
+      return keys;
+    }
+    for(const r of rows){
+      if(!classifyProduct(r["Nome do produto"])) continue;
+      const keys=keysOf(r);
+      if(!keys.length) continue;
+      for(const k of keys){ if(!_parentUF2.has(k)) _parentUF2.set(k,k); }
+      for(let i=1;i<keys.length;i++) _unionUF2(keys[0],keys[i]);
+    }
+    ana_buyers=new Map();
+    function getOrCreate2(r){
+      const keys=keysOf(r);
       if(!keys.length) return null;
-      for(const [,b] of ana_buyers){
-        for(const k of keys){ if(b.keys.has(k)){ keys.forEach(k2=>b.keys.add(k2)); return b; } }
-      }
-      const b={keys:new Set(keys),products:[]};
-      ana_buyers.set(keys[0]||Math.random().toString(),b);
+      const canonical=_findUF2(keys[0]);
+      let b=ana_buyers.get(canonical);
+      if(!b){ b={keys:new Set(keys),products:[]}; ana_buyers.set(canonical,b); }
+      else keys.forEach(k=>b.keys.add(k));
       return b;
     }
     for(const r of rows){
