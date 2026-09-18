@@ -4781,12 +4781,19 @@ function renderResumo(){
     const cpcE =em(m.cpc, METAS_T.cpc.val, false);
     const ctrE =em(m.ctr, METAS_T.ctr.val, true);
     const cpmE =em(m.cpm, METAS_T.cpm.val, false);
+    const custoPageView = m.landingViews>0 ? m.spend/m.landingViews : 0;
+    const custoCheckout = m.checkouts>0    ? m.spend/m.checkouts    : 0;
+    const pctPageView = (custoPageView/META_CPV)*100;
+    const pctCheckout = (custoCheckout/META_CPV)*100;
     const lines=[
 `*${label}*`,
 ``,
 `Investimento:\t${fBRLR(m.spend)}`,
 `${vendasLbl}:\t${m.vendas}`,
 `Custo por venda:\t${fBRLR(m.cpv)}\t${cpvE} Meta: ${fBRLR(META_CPV)}`,
+``,
+`Custo por visualização da página: ${fBRLR(custoPageView)} ( ${pctPageView.toFixed(0)}%)`,
+`Custo por finalização de compra iniciado: ${fBRLR(custoCheckout)} ( ${pctCheckout.toFixed(0)}%)`,
 ``,
 `Ticket Médio:\t${fBRLR(m.ticket)}`,
 `ROAS:\t${(m.roas||0).toFixed(2)}`,
