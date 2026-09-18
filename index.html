@@ -230,6 +230,7 @@ const CACHE_KEY="dash_v2";
 
 // Metas aba Principal
 const META_CPV=10, META_ROAS=1.80, META_TICKET=18;
+const META_PAGEVIEW=1.56, META_CHECKOUT=6.26; // derivadas da cadeia CPC→Connect→Tx Pág→Checkout
 const TAXA_IMPOSTO=1.1215;
 
 // Metas aba Tráfego
@@ -4785,6 +4786,8 @@ function renderResumo(){
     const custoCheckout = m.checkouts>0    ? m.spend/m.checkouts    : 0;
     const pctPageView = (custoPageView/META_CPV)*100;
     const pctCheckout = (custoCheckout/META_CPV)*100;
+    const pvE = em(custoPageView, META_PAGEVIEW, false);
+    const coE = em(custoCheckout, META_CHECKOUT, false);
     const lines=[
 `*${label}*`,
 ``,
@@ -4792,8 +4795,8 @@ function renderResumo(){
 `${vendasLbl}:\t${m.vendas}`,
 `Custo por venda:\t${fBRLR(m.cpv)}\t${cpvE} Meta: ${fBRLR(META_CPV)}`,
 ``,
-`Custo por visualização da página: ${fBRLR(custoPageView)} ( ${pctPageView.toFixed(0)}%)`,
-`Custo por finalização de compra iniciado: ${fBRLR(custoCheckout)} ( ${pctCheckout.toFixed(0)}%)`,
+`Custo por visualização da página: ${fBRLR(custoPageView)} ( ${pctPageView.toFixed(0)}%)\t${pvE} Meta: ${fBRLR(META_PAGEVIEW)}`,
+`Custo por finalização de compra iniciado: ${fBRLR(custoCheckout)} ( ${pctCheckout.toFixed(0)}%)\t${coE} Meta: ${fBRLR(META_CHECKOUT)}`,
 ``,
 `Ticket Médio:\t${fBRLR(m.ticket)}`,
 `ROAS:\t${(m.roas||0).toFixed(2)}`,
