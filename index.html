@@ -226,7 +226,18 @@ const FUNIL_PRODUTOS = [
 const FUNIL_IGNORAR = n => /mapa da casa|raiox/i.test(n);
 
 // Cache localStorage
-const CACHE_KEY="dash_v2";
+const CACHE_KEY="dash_v3";
+const SHEET_CHECKOUT_NAME="Base vendas - checkout Cristiano";
+// Junta as linhas da aba do checkout próprio na base de vendas da Eduzz, reordenando as
+// colunas pelo cabeçalho da Eduzz (colunas extras do checkout — Campaign/Medium/Source — são ignoradas).
+function mergeVendasCheckout(vj,cj){
+  const v=(vj&&vj.values)||[], c=(cj&&cj.values)||[];
+  if(c.length<2||!v.length) return vj;
+  const hV=v[0].map(x=>String(x).trim()), hC=c[0].map(x=>String(x).trim());
+  const idx=hV.map(h=>hC.indexOf(h));
+  const extra=c.slice(1).filter(r=>r&&r.some(x=>String(x||"").trim())).map(r=>idx.map(i=>i>=0?(r[i]||""):""));
+  return {...vj,values:v.concat(extra)};
+}
 
 // Metas aba Principal
 const META_CPV=4.50, META_ROAS=1.80, META_TICKET=18;
@@ -596,12 +607,12 @@ async function loadData(force=false){
   if(IS_FILE){ S.firstLoad=false;render();return; }
 
   // ── Cache: na carga inicial, usa dados salvos para abrir instantâneo ─────
-  let mj,vj,hj,mmj;
+  let mj,vj,hj,mmj,cj;
   let usedCache=false;
   if(!force && S.firstLoad){
     try{
       const raw=localStorage.getItem(CACHE_KEY);
-      if(raw){ const c=JSON.parse(raw); if(c.mj&&c.vj&&c.hj&&c.mmj){({mj,vj,hj,mmj}=c);usedCache=true;}else{localStorage.removeItem(CACHE_KEY);} }
+      if(raw){ const c=JSON.parse(raw); if(c.mj&&c.vj&&c.hj&&c.mmj&&c.cj){({mj,vj,hj,mmj,cj}=c);usedCache=true;}else{localStorage.removeItem(CACHE_KEY);} }
     }catch(e){ localStorage.removeItem(CACHE_KEY); }
   }
 
@@ -618,14 +629,17 @@ async function loadData(force=false){
       // Agora: fetchSheetPaged() busca cada aba em blocos paralelos, igual à Sessão — mesmo
       // formato de retorno ({values:[[...]]}), então o resto do código (parseSheet(mj) etc.)
       // não muda em nada.
-      [mj,vj,hj,mmj]=await Promise.all([
+      [mj,vj,hj,mmj,cj]=await Promise.all([
         fetchSheetPaged(SHEET_ID_META,"Base Meta",API_KEY),
         fetchSheetPaged(SHEET_ID_VENDAS,"📥 Base Vendas - Completo",API_KEY),
         fetchSheetPaged(SHEET_ID_VENDAS,"📥 Base Vendas - Completo - manual",API_KEY),
         fetchSheetPaged(SHEET_ID_META_MAPA,"Base Meta",API_KEY),
+        // Checkout próprio do Cristiano (nova aba, 24/11/2026) — mesmo formato da Eduzz.
+        // Isolado no catch: se a aba falhar, a dash segue só com a Eduzz.
+        fetchSheetPaged(SHEET_ID_VENDAS,SHEET_CHECKOUT_NAME,API_KEY).catch(e=>{console.warn("Checkout Cristiano:",e);return {values:[]};}),
       ]);
       // Salva no cache para próximas aberturas
-      try{ localStorage.setItem(CACHE_KEY,JSON.stringify({mj,vj,hj,mmj})); }catch(e){ console.warn("Cache cheio:",e); }
+      try{ localStorage.setItem(CACHE_KEY,JSON.stringify({mj,vj,hj,mmj,cj})); }catch(e){ console.warn("Cache cheio:",e); }
       clearTimeout(_t);
     }catch(e){
       clearTimeout(_t);
@@ -688,6 +702,8 @@ async function loadData(force=false){
     }
     const histRows=parseSheet(hj).map(parseHistRow).filter(r=>r["Nome do produto"]);
 
+    // Soma as vendas do checkout próprio às da Eduzz (mesmas colunas, alinhadas pelo cabeçalho)
+    vj=mergeVendasCheckout(vj,cj);
     // Funil usa a mesma planilha de vendas (webhook)
     const fj=vj;
 
